@@ -1,6 +1,6 @@
 # Majsoul WebSocket Cosmetics
 
-通过原生 WebSocket 修改雀魂网页端的本地装扮显示。当前版本 **0.4.11**。
+通过原生 WebSocket 修改雀魂网页端的本地装扮显示。当前版本 **0.4.12**。
 
 ## 安装
 

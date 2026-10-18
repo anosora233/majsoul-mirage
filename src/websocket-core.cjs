@@ -12,7 +12,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
   const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
   const api = {
     version, active: true, readOnly: false, log: true, debug: false,
-    onRequest: null, onResponse: null, onNotify: null,
+    onRequest: null, onResponse: null, onNotify: null, localMethods: new Set(),
     stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
       modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
     lookupType(name) { return root.lookupType(name.startsWith('.') ? name : 'lq.' + name); },
@@ -92,12 +92,12 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
     if (api.log && (action !== 'pass' || api.log === 'all')) scope.console.info(format(record, detail));
     dump(record);
   }
-  function error(state, stage, exception, record) {
+  function error(state, stage, exception, record, retained = true) {
     api.stats.errors++;
     // Exception text stays private; explicitly enabled debugging prints captured message snapshots.
     record ||= {connection:state.id,direction:'frame',method:null,id:null};
     record.action = 'error';
-    const detail = stage+' ('+(exception.name || 'Error')+'); original retained';
+    const detail = stage+' ('+(exception.name || 'Error')+'); original '+(retained ? 'retained' : 'blocked');
     scope.console.warn(format(record, detail));
     dump(record);
   }
@@ -124,16 +124,28 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
     const record=metadata(state,'request',service,method,parsed.id);
     const result={data,pending,id:parsed.id,record};
     if(!types){api.stats.unsupported++;capture(record,null,parsed.wrapper.data);return result;}
+    const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,
+      local:!api.readOnly && api.localMethods.has(service+'.'+method)};
+    function fail(stage, exception) {
+      error(state,stage,exception,record,!context.local);
+      if (!context.local) return result;
+      // Build the error envelope independently of the failed response/notification encoder.
+      const payload=protobuf.Writer.create().uint32(types.response.fields.error.id * 8 + 2)
+        .bytes(api.lookupType('Error').encode({code:1}).finish()).finish();
+      capture(record,types.response,payload,'response');
+      return {synthetic:packet(3,parsed.id,{name:'',data:payload}),notifications:[],record};
+    }
     let message;
     try { message=decode(types.request,parsed.wrapper.data); }
-    catch(exception){capture(record,types.request,parsed.wrapper.data);error(state,'request decode',exception,record);return result;}
+    catch(exception){capture(record,types.request,parsed.wrapper.data);return fail('request decode',exception);}
     capture(record,types.request,parsed.wrapper.data,'before',message);
     if(api.readOnly)return result;
-    const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
+    context.message=message;
     let action;
-    try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return result;}
+    try { action=call(api.onRequest,context); } catch(exception){return fail('request hook',exception);}
     try {
       if(action&&Object.prototype.hasOwnProperty.call(action,'respond')){
+        context.local=true;
         if(!action.respond||typeof action.respond!=='object'||Array.isArray(action.respond))throw new TypeError('Local response must be an object');
         const response=types.response.fromObject(action.respond);
         const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
@@ -150,7 +162,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
         capture(record,types.request,parsed.wrapper.data,'after',message);
         return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true,record};
       }
-    } catch(exception) { error(state,'request hook encode',exception,record); }
+    } catch(exception) { return fail('request hook encode',exception); }
     return result;
   }
   function incoming(state,event) {

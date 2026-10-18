@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Majsoul WebSocket Cosmetics
 // @namespace    majsoul-local-hook
-// @version      0.4.11
+// @version      0.4.12
 // @description  Local cosmetic customization with a bundled cfg snapshot.
 // @match        https://game.maj-soul.com/1/*
 // @run-at       document-start
@@ -231,7 +231,7 @@
     const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
     const api = {
       version, active: true, readOnly: false, log: true, debug: false,
-      onRequest: null, onResponse: null, onNotify: null,
+      onRequest: null, onResponse: null, onNotify: null, localMethods: new Set(),
       stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
         modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
       lookupType(name) { return root.lookupType(name.startsWith('.') ? name : 'lq.' + name); },
@@ -311,12 +311,12 @@
       if (api.log && (action !== 'pass' || api.log === 'all')) scope.console.info(format(record, detail));
       dump(record);
     }
-    function error(state, stage, exception, record) {
+    function error(state, stage, exception, record, retained = true) {
       api.stats.errors++;
       // Exception text stays private; explicitly enabled debugging prints captured message snapshots.
       record ||= {connection:state.id,direction:'frame',method:null,id:null};
       record.action = 'error';
-      const detail = stage+' ('+(exception.name || 'Error')+'); original retained';
+      const detail = stage+' ('+(exception.name || 'Error')+'); original '+(retained ? 'retained' : 'blocked');
       scope.console.warn(format(record, detail));
       dump(record);
     }
@@ -343,16 +343,28 @@
       const record=metadata(state,'request',service,method,parsed.id);
       const result={data,pending,id:parsed.id,record};
       if(!types){api.stats.unsupported++;capture(record,null,parsed.wrapper.data);return result;}
+      const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,
+        local:!api.readOnly && api.localMethods.has(service+'.'+method)};
+      function fail(stage, exception) {
+        error(state,stage,exception,record,!context.local);
+        if (!context.local) return result;
+        // Build the error envelope independently of the failed response/notification encoder.
+        const payload=protobuf.Writer.create().uint32(types.response.fields.error.id * 8 + 2)
+          .bytes(api.lookupType('Error').encode({code:1}).finish()).finish();
+        capture(record,types.response,payload,'response');
+        return {synthetic:packet(3,parsed.id,{name:'',data:payload}),notifications:[],record};
+      }
       let message;
       try { message=decode(types.request,parsed.wrapper.data); }
-      catch(exception){capture(record,types.request,parsed.wrapper.data);error(state,'request decode',exception,record);return result;}
+      catch(exception){capture(record,types.request,parsed.wrapper.data);return fail('request decode',exception);}
       capture(record,types.request,parsed.wrapper.data,'before',message);
       if(api.readOnly)return result;
-      const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
+      context.message=message;
       let action;
-      try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return result;}
+      try { action=call(api.onRequest,context); } catch(exception){return fail('request hook',exception);}
       try {
         if(action&&Object.prototype.hasOwnProperty.call(action,'respond')){
+          context.local=true;
           if(!action.respond||typeof action.respond!=='object'||Array.isArray(action.respond))throw new TypeError('Local response must be an object');
           const response=types.response.fromObject(action.respond);
           const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
@@ -369,7 +381,7 @@
           capture(record,types.request,parsed.wrapper.data,'after',message);
           return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true,record};
         }
-      } catch(exception) { error(state,'request hook encode',exception,record); }
+      } catch(exception) { return fail('request hook encode',exception); }
       return result;
     }
     function incoming(state,event) {
@@ -528,7 +540,9 @@
       saveCommonViews: message => set('views', {values:message.views, index:message.save_index}, message.save_index),
       addFinishedEnding() {}
     };
-    api.onRequest = ({socket, service, method, message}) => {
+    api.localMethods = new Set(Object.keys(localRequests).map(method => 'Lobby.'+method));
+    api.onRequest = context => {
+      const {socket, service, method, message} = context;
       if (service === 'Lobby' && Object.hasOwn(localRequests, method)) {
         const response = localRequests[method](message);
         if (method === 'changeCharacterSkin') {
@@ -550,6 +564,7 @@
         let content;
         try { content = JSON.parse(message.content); } catch { return; }
         if (!Number.isInteger(content?.emo_id)) return;
+        context.local = true;
         const seat = games.get(socket)?.seat ?? -1;
         if (seat < 0) {
           scope.console.warn('[MajsoulWS] emoji.skipped — seat unavailable');
@@ -627,6 +642,6 @@
 
   const cfg = installConfigSnapshot(window);
   const protocol = unpackProtocol([["Wrapper",[["name",1,"string"],["data",2,"bytes"]]],["ReqLogin",[]],["ResLogin",[["error",1,3],["account_id",2,"uint32"],["account",3,4]]],["Error",[["code",1,"uint32"],["u32_params",2,"uint32",1],["str_params",3,"string",2],["json_param",4,"string"],["level",5,"uint32"],["message",6,"string"]]],["Account",[["account_id",1,"uint32"],["title",7,"uint32"],["avatar_id",13,"uint32"],["avatar_frame",23,"uint32"],["loading_image",30,"uint32",1]]],["ReqEmailLogin",[]],["ReqOauth2Login",[]],["ReqCommon",[]],["ResFetchInfo",[["error",1,3],["title_list",10,9],["bag_info",11,10],["character_info",27,13],["all_common_views",28,16]]],["ResTitleList",[["error",1,3],["title_list",2,"uint32",1]]],["ResBagInfo",[["error",1,3],["bag",2,11]]],["Bag",[["items",1,12,1]]],["Item",[["item_id",1,"uint32"],["stack",2,"uint32"]]],["ResCharacterInfo",[["error",1,3],["characters",2,14,1],["skins",3,"uint32",1],["main_character_id",4,"uint32"],["send_gift_count",5,"uint32"],["send_gift_limit",6,"uint32"],["finished_endings",7,"uint32",1],["rewarded_endings",8,"uint32",1],["character_sort",9,"uint32",1],["hidden_characters",10,"uint32",1],["other_character_sort",11,"uint32",1]]],["Character",[["charid",1,"uint32"],["level",2,"uint32"],["exp",3,"uint32"],["views",4,15,1],["skin",5,"uint32"],["is_upgraded",6,"bool"],["extra_emoji",7,"uint32",1],["rewarded_level",8,"uint32",1],["enabled_emoji",9,"uint32",1]]],["ViewSlot",[["slot",1,"uint32"],["item_id",2,"uint32"],["type",3,"uint32"],["item_id_list",4,"uint32",1]]],["ResAllcommonViews",[["views",1,17,1],["use",2,"uint32"],["error",3,3]]],["ResAllcommonViews.Views",[["values",1,15,1],["index",2,"uint32"],["name",3,"string"]]],["ReqJoinRoom",[]],["ResJoinRoom",[["error",1,3],["room",2,20]]],["Room",[["owner_id",2,"uint32"],["persons",5,21,1],["robot_count",9,"uint32"],["seq",11,"uint32"],["robots",13,21,1],["positions",14,"uint32",1]]],["PlayerGameView",[["account_id",1,"uint32"],["avatar_id",2,"uint32"],["title",3,"uint32"],["character",6,14],["avatar_frame",8,"uint32"],["views",10,15,1]]],["ResSelfRoom",[["error",1,3],["room",2,20]]],["ReqCreateRoom",[]],["ResCreateRoom",[["error",1,3],["room",2,20]]],["ReqGameRecord",[]],["ResGameRecord",[["error",1,3],["head",3,27]]],["RecordGame",[["accounts",11,28,1]]],["RecordGame.AccountInfo",[["account_id",1,"uint32"],["avatar_id",4,"uint32"],["character",5,14],["title",6,"uint32"],["avatar_frame",9,"uint32"],["views",11,15,1]]],["ReqAccountInfo",[]],["ResAccountInfo",[["error",1,3],["account",2,4]]],["ReqUseTitle",[["title",1,"uint32"]]],["ResCommon",[["error",1,3]]],["ReqSetLoadingImage",[["images",1,"uint32",1]]],["ReqChangeMainCharacter",[["character_id",1,"uint32"]]],["ReqChangeCharacterSkin",[["character_id",1,"uint32"],["skin",2,"uint32"]]],["ReqUpdateCharacterSort",[["sort",1,"uint32",1],["other_sort",2,"uint32",1],["hidden_characters",3,"uint32",1]]],["ReqSetHiddenCharacter",[["chara_list",1,"uint32",1]]],["ResSetHiddenCharacter",[["error",1,3],["hidden_characters",2,"uint32",1]]],["ReqUseCommonView",[["index",3,"uint32"]]],["ReqSaveCommonViews",[["views",1,15,1],["save_index",2,"uint32"],["is_use",3,"uint32"],["name",4,"string"]]],["ReqFinishedEnding",[]],["ReqAuthGame",[["account_id",1,"uint32"]]],["ResAuthGame",[["error",1,3],["players",2,21,1],["seat_list",3,"uint32",1]]],["ReqBroadcastInGame",[["content",1,"string"],["except_self",2,"bool"]]],["NotifyAccountUpdate",[["update",1,46]]],["AccountUpdate",[["character",2,47],["main_character",18,48]]],["AccountUpdate.CharacterUpdate",[["characters",2,14,1]]],["AccountUpdate.MainCharacterUpdate",[]],["NotifyRoomPlayerUpdate",[["owner_id",3,"uint32"],["robot_count",4,"uint32"],["player_list",5,21,1],["seq",6,"uint32"],["robots",7,21,1],["positions",8,"uint32",1]]],["NotifyRoomPlayerReady",[["seq",4,"uint32"]]],["NotifyRoomPlayerDressing",[["seq",4,"uint32"]]],["NotifyRoomKickOut",[]],["NotifyGameFinishRewardV2",[["main_character",4,54]]],["NotifyGameFinishRewardV2.MainCharacter",[["level",1,"uint32"],["exp",2,"uint32"],["add",3,"uint32"]]],["NotifyGameBroadcast",[["seat",1,"uint32"],["content",2,"string"]]]], {"Lobby":{"login":[1,2],"emailLogin":[5,2],"oauth2Login":[6,2],"fetchInfo":[7,8],"joinRoom":[18,19],"fetchRoom":[7,22],"createRoom":[23,24],"fetchGameRecord":[25,26],"fetchAccountInfo":[29,30],"useTitle":[31,32],"setLoadingImage":[33,32],"changeMainCharacter":[34,32],"changeCharacterSkin":[35,32],"updateCharacterSort":[36,32],"setHiddenCharacter":[37,38],"useCommonView":[39,32],"saveCommonViews":[40,32],"addFinishedEnding":[41,32],"leaveRoom":[7,32]},"FastTest":{"authGame":[42,43],"broadcastInGame":[44,32]}});
-  const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, "0.4.11");
+  const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, "0.4.12");
   installCosmeticHook(window, api, cfg);
 })();

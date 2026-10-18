@@ -162,6 +162,19 @@ async function test(){
   api.readOnly=false;api.debug=false;api.onRequest=()=>({respond:{}});
   const resumed=a.sent.length;a.send(request(24,'Lobby','useTitle',{title:7}));
   assert.equal(a.sent.length,resumed);await Promise.resolve();
+  // A malformed known-local request is blocked before its business hook runs.
+  api.localMethods.add('Lobby.useTitle');
+  const localSent=a.sent.length;
+  a.send(frame(2,25,'.lq.Lobby.useTitle',[255]));await Promise.resolve();
+  assert.equal(a.sent.length,localSent);
+  assert.equal(decode(type('ResCommon'),decodeFrame(received).wrapper.data).error.code,1);
+  // Error replies do not depend on the failed normal response encoder.
+  const responseType=type('ResCommon'), responseEncoder=responseType.encode;
+  responseType.encode=()=>{throw Error('Response encoder failed');};
+  a.send(request(26,'Lobby','useTitle',{title:1}));await Promise.resolve();
+  responseType.encode=responseEncoder;
+  assert.equal(a.sent.length,localSent);
+  assert.equal(decode(type('ResCommon'),decodeFrame(received).wrapper.data).error.code,1);
   // A native send failure must not be reported as a successful modification.
   class BrokenSocket extends NativeSocket { send(){throw Error('Native send failed');} }
   const failedScope={WebSocket:BrokenSocket,MessageEvent,queueMicrotask,console:scope.console};

@@ -1,6 +1,6 @@
 {
   "name": "majsoul-unlock",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "private": true,
   "description": "Majsoul local cosmetic userscript over native WebSocket messages",
   "engines": {"node": ">=20"},

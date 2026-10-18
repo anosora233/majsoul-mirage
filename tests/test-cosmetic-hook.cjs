@@ -37,7 +37,7 @@ async function test() {
     localStorage:{getItem:key => saved.get(key) ?? null, setItem:(key, value) => saved.set(key, value)},
     console:{info(...args) { logs.push(args.join(' ')); }, warn(...args) { warnings.push(args); }}};
   const generated = fs.readFileSync('majsoul-websocket-hook.user.js', 'utf8');
-  assert(Buffer.byteLength(generated) < 41000, 'Keep compact protocol data and external protobuf.js');
+  assert(Buffer.byteLength(generated) < 42000, 'Keep compact protocol data and external protobuf.js');
   assert(generated.includes('// @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js'));
   const context = vm.createContext({window:browser, TextDecoder, TextEncoder, URL, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
@@ -282,6 +282,22 @@ async function test() {
   assert(logs.some(line => line.includes('local notify NotifyGameBroadcast')));
   assert(logs.some(line => line.includes('modified notify NotifyAccountUpdate')));
   assert(!logs.some(line => line.includes('pass ') || line.includes('keep-token') || line.includes('keep-name')));
+  // Local failures never escape to the server, and still complete the waiting callback.
+  const nativeCount=socket.sent.length, noticeCount=notifications.length;
+  const write=browser.localStorage.setItem;
+  browser.localStorage.setItem=()=>{throw Error('private storage failure');};
+  assert.equal((await request('Lobby','useTitle',{title:9999})).error.code,1);
+  browser.localStorage.setItem=write;
+  const noticeType=api.lookupType('NotifyAccountUpdate'), noticeEncoder=noticeType.encode;
+  noticeType.encode=()=>{throw Error('private notification failure');};
+  assert.equal((await request('Lobby','changeCharacterSkin',{character_id:200001,skin:400102})).error.code,1);
+  noticeType.encode=noticeEncoder;
+  assert.equal(socket.sent.length,nativeCount);assert.equal(notifications.length,noticeCount);
+  assert(warnings.slice(-2).every(args=>args[0].includes('original blocked')));
+  assert(!JSON.stringify(warnings).includes('private'));
+  api.readOnly=true;
+  await request('Lobby','useTitle',{title:9999},{},socket);
+  assert.equal(socket.sent.length,nativeCount+1,'Read-only mode still forwards local methods');
   api.uninstall(); assert.equal(browser.WebSocket, Socket);
   if (process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify(fixtures));
   console.log('PASS: generated cosmetic script, all prod.js branches, local storage and responses, unknown fields, errors, native passthrough');

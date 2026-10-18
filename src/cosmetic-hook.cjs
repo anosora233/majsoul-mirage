@@ -61,7 +61,9 @@ function installCosmeticHook(scope, api, cfg) {
     saveCommonViews: message => set('views', {values:message.views, index:message.save_index}, message.save_index),
     addFinishedEnding() {}
   };
-  api.onRequest = ({socket, service, method, message}) => {
+  api.localMethods = new Set(Object.keys(localRequests).map(method => 'Lobby.'+method));
+  api.onRequest = context => {
+    const {socket, service, method, message} = context;
     if (service === 'Lobby' && Object.hasOwn(localRequests, method)) {
       const response = localRequests[method](message);
       if (method === 'changeCharacterSkin') {
@@ -83,6 +85,7 @@ function installCosmeticHook(scope, api, cfg) {
       let content;
       try { content = JSON.parse(message.content); } catch { return; }
       if (!Number.isInteger(content?.emo_id)) return;
+      context.local = true;
       const seat = games.get(socket)?.seat ?? -1;
       if (seat < 0) {
         scope.console.warn('[MajsoulWS] emoji.skipped — seat unavailable');

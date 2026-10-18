@@ -1,4 +1,4 @@
-# WebSocket Cosmetics 0.4.11
+# WebSocket Cosmetics 0.4.12
 
 安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
 保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
@@ -21,7 +21,7 @@
 
 ## 状态与日志
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.11` 和 `[MajsoulWS] cosmetics.ready`。
+安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.12` 和 `[MajsoulWS] cosmetics.ready`。
 默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
 
 ```text
@@ -35,7 +35,9 @@
 `blocked` 表示请求未发往服务器，已安排本地响应。
 表情通知使用该连接 authGame 的本人座位号，先派发本地响应，再派发通知，仅自己可见。
 若座位未知，只返回本地响应并提示 `emoji.skipped — seat unavailable`；重新进入对局后会重新记录座位。
-解析或修改失败显示 `error`，标明消息、失败阶段和异常类型，原消息继续透传。
+解析或修改失败显示 `error`，标明消息、失败阶段和异常类型。普通消息保留原包透传；
+已确定由本地处理的请求失败时阻断原包，返回 `error.code = 1` 的本地错误响应，不派发通知。
+该错误码仅表示本地处理失败；已写入的本地设置不会自动回滚。只解析模式仍原样透传。
 默认日志只显示消息元信息；开启内容调试后，匹配消息的解码内容会直接输出到 console。
 
 ```js
