@@ -133,6 +133,26 @@ async function test(){
   api.debug=false;
   const stopped=output.length;a.send(request(22,'Lobby','fetchInfo'));a.receive(response(22,'Lobby','fetchInfo'));
   assert.equal(output.length,stopped);
+  // Read-only inspection retains decoding and matching without invoking business hooks.
+  api.readOnly=true;api.debug=true;
+  const baseline={...api.stats},inspection=output.length;
+  api.onRequest=api.onResponse=api.onNotify=()=>{throw Error('Read-only invoked a business hook');};
+  const readRequest=request(23,'Lobby','useTitle',{title:7});
+  a.send(readRequest);assert.equal(a.sent.at(-1),readRequest);
+  const readResponse=response(23,'Lobby','useTitle');a.receive(readResponse);
+  assert.deepEqual(Buffer.from(received),readResponse);
+  const readNotice=frame(1,null,'.lq.NotifyAccountUpdate',raw(type('NotifyAccountUpdate'),{update:{character:{}}}));
+  a.receive(readNotice);assert.deepEqual(Buffer.from(received),readNotice);
+  await Promise.resolve();
+  for(const key of ['modified','blocked','synthetic','localNotifications','errors'])assert.equal(api.stats[key],baseline[key]);
+  assert.equal(api.stats.requests,baseline.requests+1);assert.equal(api.stats.responses,baseline.responses+1);
+  assert.equal(api.stats.notifications,baseline.notifications+1);
+  const inspected=output.slice(inspection).filter(entry=>entry[0].includes(' — content'));
+  assert.equal(inspected.length,3);assert.equal(inspected[0][1].before.message.title,7);
+  assert(inspected.every(entry=>!entry[1].after && !entry[1].response));
+  api.readOnly=false;api.debug=false;api.onRequest=()=>({respond:{}});
+  const resumed=a.sent.length;a.send(request(24,'Lobby','useTitle',{title:7}));
+  assert.equal(a.sent.length,resumed);await Promise.resolve();
   // A native send failure must not be reported as a successful modification.
   class BrokenSocket extends NativeSocket { send(){throw Error('Native send failed');} }
   const failedScope={WebSocket:BrokenSocket,MessageEvent,queueMicrotask,console:scope.console};

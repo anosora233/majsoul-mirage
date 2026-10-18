@@ -11,7 +11,7 @@ function installCosmeticHook(scope, api, cfg) {
   function set(name, value, id) { storage.setItem(key(name, id), JSON.stringify(value)); }
   const definitions = cfg.item_definition;
   const games = new WeakMap();
-  let roomUpdate = null;
+  let roomUpdate = null, roomSeq = 0;
   const ids = table => Object.keys(table.map_).map(Number);
   const mainId = () => get('main', 200007);
   const selectedViews = () => get('views', {}, get('use', 0)).values || [];
@@ -42,9 +42,12 @@ function installCosmeticHook(scope, api, cfg) {
     }
     return changed;
   }
+  function nextRoomSeq(message) { message.seq = roomSeq = Math.max(message.seq || 0, roomSeq + 1); }
+  function clearRoom() { roomUpdate = null; roomSeq = 0; }
   function updateRoom(message) {
     const changed = override(message?.player_list);
     roomUpdate = message?.player_list?.some(player => player.account_id === get('account', null)) ? message : null;
+    if (!roomUpdate) roomSeq = 0;
     return changed;
   }
   const localRequests = {
@@ -66,6 +69,7 @@ function installCosmeticHook(scope, api, cfg) {
           message:{update:{character:{characters:[character(message.character_id)]}}}}];
         if (roomUpdate) {
           override(roomUpdate.player_list);
+          nextRoomSeq(roomUpdate);
           notify.push({name:'NotifyRoomPlayerUpdate', message:roomUpdate});
         }
         return {respond:{}, notify};
@@ -99,7 +103,7 @@ function installCosmeticHook(scope, api, cfg) {
     switch (method) {
       case 'login': case 'emailLogin': case 'oauth2Login':
         if (message.account_id) {
-          if (message.account_id !== get('account', null)) roomUpdate = null;
+          if (message.account_id !== get('account', null)) clearRoom();
           set('account', message.account_id);
         }
         return override([message.account]);
@@ -121,11 +125,13 @@ function installCosmeticHook(scope, api, cfg) {
       }
       case 'joinRoom': case 'fetchRoom': case 'createRoom': {
         const room = message.room;
-        if (!room) { roomUpdate = null; return; }
+        if (!room) { clearRoom(); return; }
+        if (method !== 'fetchRoom' || !roomUpdate) roomSeq = room.seq || 0;
+        room.seq = roomSeq = Math.max(room.seq || 0, roomSeq);
         return updateRoom(api.lookupType('NotifyRoomPlayerUpdate').fromObject({player_list:room.persons,
           owner_id:room.owner_id, robot_count:room.robot_count, seq:room.seq, robots:room.robots, positions:room.positions}));
       }
-      case 'leaveRoom': roomUpdate = null; return;
+      case 'leaveRoom': clearRoom(); return;
       case 'fetchGameRecord': return override(message.head?.accounts);
       case 'fetchAccountInfo': return override([message.account]);
     }
@@ -137,7 +143,11 @@ function installCosmeticHook(scope, api, cfg) {
         delete message.update.character;
         delete message.update.main_character;
         return true;
-      case 'NotifyRoomPlayerUpdate': return updateRoom(message);
+      case 'NotifyRoomPlayerUpdate':
+        nextRoomSeq(message); updateRoom(message); return true;
+      case 'NotifyRoomPlayerReady': case 'NotifyRoomPlayerDressing':
+        nextRoomSeq(message); return true;
+      case 'NotifyRoomKickOut': clearRoom(); return;
       case 'NotifyGameFinishRewardV2':
         if (!message.main_character) return;
         Object.assign(message.main_character, {exp:1, add:0, level:5});

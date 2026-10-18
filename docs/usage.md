@@ -1,4 +1,4 @@
-# WebSocket Cosmetics 0.4.9
+# WebSocket Cosmetics 0.4.10
 
 安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
 保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
@@ -21,7 +21,7 @@
 
 ## 状态与日志
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.9` 和 `[MajsoulWS] cosmetics.ready`。
+安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.10` 和 `[MajsoulWS] cosmetics.ready`。
 默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
 
 ```text
@@ -40,6 +40,10 @@
 
 ```js
 majsoulWS.stats
+majsoulWS.readOnly = true // 只解析，跳过修改、阻断和本地响应/通知
+majsoulWS.readOnly = false // 恢复修改（默认）
+majsoulWS.active = false // 完全暂停，包括解析与日志
+majsoulWS.active = true  // 恢复 Hook
 majsoulWS.log = true  // 默认：只打印修改和拦截操作
 majsoulWS.log = 'all' // 同时打印普通透传消息，标记为 pass
 majsoulWS.log = false // 关闭操作与透传日志；错误警告保留
@@ -49,6 +53,10 @@ majsoulWS.debug = true                    // 输出全部可识别消息的内�
 majsoulWS.debug = false                   // 停止内容输出（默认）
 majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
 ```
+
+只解析模式保留请求匹配、统计和内容调试，不调用业务 Hook，也不更新装扮、座位或房间缓存。
+它不会撤销已应用的装扮。若跨过登录、换房或进局后恢复修改，建议刷新页面以重新建立状态。
+切换前已拦截请求排队中的本地回复仍会完成，避免游戏等待回调悬空。
 
 `stats.modified` 是被修改的消息数，`blocked` 是拦截的请求数，`synthetic` 是生成的本地响应数。
 `localNotifications` 是实际派发的本地通知数；`debug = 'NotifyGameBroadcast'` 可以查看构造的通知内容。
@@ -60,6 +68,10 @@ majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
 
 不保存消息历史或内容队列，也不提供 `recent`；所有内容直接交给 console。
 仅为换肤刷新保留当前房间状态；房间响应与玩家变化通知都会更新它，离房或本人被移出后清除。
+房间玩家更新、准备和换装通知统一使用本地递增的 `seq`，本地换肤通知也递增；
+真实通知使用 `max(服务器 seq, 本地 seq + 1)`，避免被游戏当作旧通知忽略。
+房间响应初始化计数，查询当前房间不回退计数；重新进房、离房、被踢或切换账号时重置。
+只解析模式不改写 `seq`；从修改模式切换到只解析模式时建议刷新，避免此前抬高的序号影响真实通知。
 关闭内容调试后不再生成快照。请求编号匹配仍需保留少量元信息，不包含消息正文。
 响应按每条连接自己的请求编号匹配；每条连接最多保留 4096 个等待项，
 两分钟后在下一次处理协议帧时清除。

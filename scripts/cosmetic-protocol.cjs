@@ -2,6 +2,7 @@
 function cosmeticProtocol(protobuf, schema, config) {
   const source = protobuf.Root.fromJSON(schema).resolveAll();
   const fields = {
+    NotifyRoomPlayerReady:'seq', NotifyRoomPlayerDressing:'seq',
     ResLogin:'error account_id account',
     ResFetchInfo:'error character_info all_common_views title_list bag_info',
     Account:'account_id avatar_id avatar_frame title loading_image',
@@ -48,7 +49,7 @@ function cosmeticProtocol(protobuf, schema, config) {
       methodMap.service[service][method] = pair;
     }
   }
-  for (const name of ['NotifyAccountUpdate', 'NotifyRoomPlayerUpdate', 'NotifyGameFinishRewardV2', 'NotifyGameBroadcast']) include('lq.' + name);
+  for (const name of ['NotifyAccountUpdate', 'NotifyRoomPlayerUpdate', 'NotifyRoomPlayerReady', 'NotifyRoomPlayerDressing', 'NotifyRoomKickOut', 'NotifyGameFinishRewardV2', 'NotifyGameBroadcast']) include('lq.' + name);
   return {schema:result.resolveAll().toJSON(), methodMap};
 }
 

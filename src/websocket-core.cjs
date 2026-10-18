@@ -11,7 +11,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
   const sockets = new Map();
   const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
   const api = {
-    version: '0.4.9', active: true, log: true, debug: false,
+    version: '0.4.10', active: true, readOnly: false, log: true, debug: false,
     onRequest: null, onResponse: null, onNotify: null,
     stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
       modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
@@ -135,10 +135,11 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     const record=metadata(state,'request',service,method,parsed.id);
     capture(record,types?.request,parsed.wrapper.data);
     if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id,record};}
-    if(typeof api.onRequest!=='function')return{data,pending,id:parsed.id,record};
+    if(!api.readOnly && typeof api.onRequest!=='function')return{data,pending,id:parsed.id,record};
     let message;
     try { message=decode(types.request,parsed.wrapper.data); }
     catch(exception){error(state,'request decode',exception,record);return{data,pending,id:parsed.id,record};}
+    if(api.readOnly)return{data,pending,id:parsed.id,record};
     const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
     let action;
     try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return{data,pending,id:parsed.id,record};}
@@ -189,10 +190,10 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
       context={socket:state.socket,connection:state.id,name};
     }else return;
     capture(record,type,parsed.wrapper.data);
-    if(typeof handler!=='function'){report(record,'pass');return;}
+    if(!api.readOnly && typeof handler!=='function'){report(record,'pass');return;}
     try{
       context.message=decode(type,parsed.wrapper.data);
-      if(call(handler,context)!==true){report(record,'pass');return;}
+      if(api.readOnly || call(handler,context)!==true){report(record,'pass');return;}
       parsed.wrapper.data=encode(type,context.message);
       capture(record,type,parsed.wrapper.data,'after');
       const result=packet(parsed.kind,parsed.id,parsed.wrapper);

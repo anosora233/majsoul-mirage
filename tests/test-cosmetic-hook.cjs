@@ -37,7 +37,7 @@ async function test() {
     localStorage:{getItem:key => saved.get(key) ?? null, setItem:(key, value) => saved.set(key, value)},
     console:{info(...args) { logs.push(args.join(' ')); }, warn(...args) { warnings.push(args); }}};
   const generated = fs.readFileSync('majsoul-websocket-hook.user.js', 'utf8');
-  assert(Buffer.byteLength(generated) < 45000, 'protobuf.js must stay external');
+  assert(Buffer.byteLength(generated) < 46000, 'protobuf.js must stay external');
   assert(generated.includes('// @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js'));
   const context = vm.createContext({window:browser, TextDecoder, TextEncoder, URL, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
@@ -165,7 +165,7 @@ async function test() {
   // Room responses initialize the cache before the first player update arrives.
   let roomNotice = await changeSkin(200001, 400102, true);
   let room = decode(roomNotice.data, 'NotifyRoomPlayerUpdate');
-  assert.equal(room.owner_id, 42); assert.equal(room.seq, 7);
+  assert.equal(room.owner_id, 42); assert.equal(room.seq, 8);
   assert.equal(room.player_list[0].avatar_id, 400102);
   assert.equal(room.player_list[0].character.skin, 400102);
   const nextPlayers = [players[0], {account_id:44,nickname:'new-player',avatar_id:4,
@@ -177,7 +177,7 @@ async function test() {
   roomNotice = await changeSkin(200001, 400103, true);
   room = decode(roomNotice.data, 'NotifyRoomPlayerUpdate');
   assert.deepEqual(room.player_list.map(player => player.account_id), [42,44]);
-  assert.equal(room.owner_id, 44); assert.equal(room.seq, 9);
+  assert.equal(room.owner_id, 44); assert.equal(room.seq, 10);
   assert.equal(room.player_list[0].character.skin, 400103);
   assert.equal(room.player_list[1].nickname, 'new-player');
   assert.deepEqual(Array.from(room.positions), [42,44]);
@@ -188,9 +188,20 @@ async function test() {
   assert.equal(room.player_list[0].character.charid, 200001);
   assert.equal(room.player_list[0].character.skin, 400103, 'Changing another character must not replace the main skin');
   assert.equal(room.player_list[1].character.skin, 400201, 'Other players retain their skins');
+  assert.equal(room.seq, 11);
+  // Server sequence numbers may lag after local skin changes; all room notices stay monotonic.
+  assert.equal(notify('NotifyRoomPlayerReady', {account_id:44,ready:true,seq:10}).seq, 12);
+  const dressing = notify('NotifyRoomPlayerDressing', {account_id:44,dressing:true,seq:10});
+  assert.equal(dressing.seq, 13); assert.equal(dressing.account_id, 44); assert.equal(dressing.dressing, true);
+  assert.equal(notify('NotifyRoomPlayerUpdate', {player_list:nextPlayers,seq:10}).seq, 14);
+  assert.equal(decode((await changeSkin(200001,400103,true)).data,'NotifyRoomPlayerUpdate').seq, 15);
+  const refreshed = await request('Lobby','fetchRoom',{}, {room:{persons:nextPlayers,seq:10}});
+  assert.equal(refreshed.room.seq, 15, 'Fetching the current room must not roll back the local sequence');
   notify('NotifyRoomPlayerUpdate', {player_list:[nextPlayers[1]]});
   await changeSkin(200001,400104,false);
   await request('Lobby','fetchRoom',{}, {room:{owner_id:42,persons:nextPlayers}});
+  assert.equal(decode((await changeSkin(200001,400104,true)).data,'NotifyRoomPlayerUpdate').seq, 1,
+    'Removing self resets the room sequence');
   await request('Lobby','leaveRoom',{},{});
   await changeSkin(200001,400101,false);
   const record = await request('Lobby', 'fetchGameRecord', {}, {head:{uuid:'keep-record',accounts:players},data_url:'keep-url'});
