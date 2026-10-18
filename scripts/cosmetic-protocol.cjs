@@ -53,4 +53,37 @@ function cosmeticProtocol(protobuf, schema, config) {
   return {schema:result.resolveAll().toJSON(), methodMap};
 }
 
-module.exports = {cosmeticProtocol};
+function packProtocol(schema, methodMap) {
+  const definitions = [];
+  function visit(namespace, prefix = '') {
+    for (const [name, type] of Object.entries(namespace.nested || {})) {
+      const path = prefix + name;
+      if (type.edition && type.edition !== 'proto2') throw Error('Unsupported protocol edition: ' + path);
+      if (type.fields) definitions.push([path, type.fields]);
+      visit(type, path + '.');
+    }
+  }
+  visit(schema.nested.lq);
+  const index = name => {
+    const value = definitions.findIndex(([path]) => path === name.replace(/^\.?lq\./, ''));
+    if (value < 0) throw Error('Missing protocol type: ' + name);
+    return value;
+  };
+  return {
+    definitions:definitions.map(([name, fields]) => [name, Object.entries(fields).map(([name, field]) => {
+      if (Object.keys(field).some(key => !['id','type','rule','options'].includes(key))
+        || field.rule && field.rule !== 'repeated'
+        || field.options && Object.keys(field.options).some(key => key !== 'packed')) {
+        throw Error('Unsupported protocol field: ' + name);
+      }
+      const result = [name, field.id, field.type.startsWith('.') ? index(field.type) : field.type];
+      if (field.rule) result.push(field.options?.packed === false ? 2 : 1);
+      return result;
+    })]),
+    services:Object.fromEntries(Object.entries(methodMap.service).map(([service, methods]) => [service,
+      Object.fromEntries(Object.entries(methods).map(([name, pair]) => [name, [index(pair.request), index(pair.response)]]))
+    ]))
+  };
+}
+
+module.exports = {cosmeticProtocol, packProtocol};

@@ -1,7 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const protobuf = require('protobufjs');
-const {cosmeticProtocol} = require('./cosmetic-protocol.cjs');
+const {cosmeticProtocol, packProtocol} = require('./cosmetic-protocol.cjs');
 const root = path.resolve(__dirname, '..');
 const data = require('../data/cfg-snapshot.json');
 
@@ -40,6 +40,7 @@ function source(name) {
 }
 const config = source('cfg-snapshot.cjs').replace("const configData = require('../data/cfg-snapshot.json');", decoder);
 const protocol = cosmeticProtocol(protobuf, require('../data/game-protocol.json'), require('../data/proto-config.json'));
+const compactProtocol = packProtocol(protocol.schema, protocol.methodMap);
 const version = require('../package.json').version;
 const metadata = `// ==UserScript==
 // @name         Majsoul WebSocket Cosmetics
@@ -53,11 +54,12 @@ const metadata = `// ==UserScript==
 // @grant        none
 // @noframes
 // ==/UserScript==`;
-const body = [config, source('websocket-core.cjs'), source('cosmetic-hook.cjs'),
+const body = [config, source('protocol.cjs'), source('websocket-core.cjs'), source('cosmetic-hook.cjs'),
   'const cfg = installConfigSnapshot(window);',
-  `const api = installWebSocketHook(window, window.protobuf, ${JSON.stringify(protocol.schema)}, ${JSON.stringify(protocol.methodMap)});`,
+  `const protocol = unpackProtocol(${JSON.stringify(compactProtocol.definitions)}, ${JSON.stringify(compactProtocol.services)});`,
+  `const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, ${JSON.stringify(version)});`,
   'installCosmeticHook(window, api, cfg);'].join('\n');
 const output = path.join(root, 'majsoul-websocket-hook.user.js');
 fs.writeFileSync(output, metadata + '\n(function () {\n'
-  + body.trim().split('\n').map(line => '  ' + line).join('\n') + '\n})();\n');
+  + body.trim().split('\n').map(line => line ? '  ' + line : '').join('\n') + '\n})();\n');
 console.log('Built', output, fs.statSync(output).size, 'bytes');

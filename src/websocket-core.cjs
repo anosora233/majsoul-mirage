@@ -2,7 +2,7 @@
  * The client-supplied schema and method map are injected by the build entry.
  * protobuf.js handles encoding, 64-bit values and unknown-field preservation.
  */
-function installWebSocketHook(scope, protobuf, schema, methodMap) {
+function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
   if (scope.majsoulWS) return scope.majsoulWS;
   const NativeSocket = scope.WebSocket;
   if (typeof NativeSocket !== 'function') throw new Error('Native WebSocket unavailable');
@@ -11,21 +11,11 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
   const sockets = new Map();
   const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
   const api = {
-    version: '0.4.10', active: true, readOnly: false, log: true, debug: false,
+    version, active: true, readOnly: false, log: true, debug: false,
     onRequest: null, onResponse: null, onNotify: null,
     stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
       modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
     lookupType(name) { return root.lookupType(name.startsWith('.') ? name : 'lq.' + name); },
-    createRequest(service, method, object = {}) {
-      const pair = getTypes(service, method);
-      if (!pair) throw new Error('Unknown request type: ' + service + '.' + method);
-      return pair.request.fromObject(object);
-    },
-    createResponse(service, method, object = {}) {
-      const pair = getTypes(service, method);
-      if (!pair) throw new Error('Unknown response type: ' + service + '.' + method);
-      return pair.response.fromObject(object);
-    },
     connections() { return Array.from(sockets.values(), s => ({id:s.id, recognized:s.recognized, pending:s.pending.size})); },
     uninstall() {
       api.active = false;
@@ -78,12 +68,12 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
   function metadata(state, direction, service, method, id) {
     return {connection:state.id,direction,service,method,id,action:'pass'};
   }
-  function capture(record, type, payload, phase = 'before') {
+  function capture(record, type, payload, phase = 'before', message) {
     const name = '.lq.'+(record.service ? record.service+'.'+record.method : record.method);
     if (api.debug !== true && !(typeof api.debug === 'string' && api.debug && name.includes(api.debug))) return;
     const snapshot = {bytes:Uint8Array.from(payload)};
     if (type) {
-      try { snapshot.message = type.toObject(decode(type,payload),{longs:String,bytes:String,enums:String}); }
+      try { snapshot.message = type.toObject(message ?? decode(type,payload),{longs:String,bytes:String,enums:String}); }
       catch (exception) { snapshot.error = exception.name; }
     }
     (record.content ||= {})[phase] = snapshot;
@@ -99,7 +89,6 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
   }
   function report(record, action, detail = '') {
     record.action = action;
-    if (detail) record.detail = detail;
     if (api.log && (action !== 'pass' || api.log === 'all')) scope.console.info(format(record, detail));
     dump(record);
   }
@@ -108,8 +97,8 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     // Exception text stays private; explicitly enabled debugging prints captured message snapshots.
     record ||= {connection:state.id,direction:'frame',method:null,id:null};
     record.action = 'error';
-    record.detail = stage+' ('+(exception.name || 'Error')+'); original retained';
-    scope.console.warn(format(record, record.detail));
+    const detail = stage+' ('+(exception.name || 'Error')+'); original retained';
+    scope.console.warn(format(record, detail));
     dump(record);
   }
   function expire(state) {
@@ -133,22 +122,22 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     const pending={service,method,types,created:Date.now()};
     api.stats.requests++;
     const record=metadata(state,'request',service,method,parsed.id);
-    capture(record,types?.request,parsed.wrapper.data);
-    if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id,record};}
-    if(!api.readOnly && typeof api.onRequest!=='function')return{data,pending,id:parsed.id,record};
+    const result={data,pending,id:parsed.id,record};
+    if(!types){api.stats.unsupported++;capture(record,null,parsed.wrapper.data);return result;}
     let message;
     try { message=decode(types.request,parsed.wrapper.data); }
-    catch(exception){error(state,'request decode',exception,record);return{data,pending,id:parsed.id,record};}
-    if(api.readOnly)return{data,pending,id:parsed.id,record};
+    catch(exception){capture(record,types.request,parsed.wrapper.data);error(state,'request decode',exception,record);return result;}
+    capture(record,types.request,parsed.wrapper.data,'before',message);
+    if(api.readOnly)return result;
     const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
     let action;
-    try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return{data,pending,id:parsed.id,record};}
+    try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return result;}
     try {
       if(action&&Object.prototype.hasOwnProperty.call(action,'respond')){
         if(!action.respond||typeof action.respond!=='object'||Array.isArray(action.respond))throw new TypeError('Local response must be an object');
         const response=types.response.fromObject(action.respond);
         const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
-        capture(record,types.response,wrapper.data,'response');
+        capture(record,types.response,wrapper.data,'response',response);
         const notifications=(Array.isArray(action.notify) ? action.notify : action.notify ? [action.notify] : []).map(notice=>{
           const type=api.lookupType(notice.name);
           const payload=encode(type,type.fromObject(notice.message || {}));
@@ -158,11 +147,11 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
       }
       if(action===true){
         parsed.wrapper.data=encode(types.request,message);
-        capture(record,types.request,parsed.wrapper.data,'after');
+        capture(record,types.request,parsed.wrapper.data,'after',message);
         return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true,record};
       }
     } catch(exception) { error(state,'request hook encode',exception,record); }
-    return{data,pending,id:parsed.id,record};
+    return result;
   }
   function incoming(state,event) {
     if(!state.active||!api.active||state.syntheticEvents.has(event))return;
@@ -189,19 +178,18 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
       handler=api.onNotify;
       context={socket:state.socket,connection:state.id,name};
     }else return;
-    capture(record,type,parsed.wrapper.data);
-    if(!api.readOnly && typeof handler!=='function'){report(record,'pass');return;}
     try{
       context.message=decode(type,parsed.wrapper.data);
+      capture(record,type,parsed.wrapper.data,'before',context.message);
       if(api.readOnly || call(handler,context)!==true){report(record,'pass');return;}
       parsed.wrapper.data=encode(type,context.message);
-      capture(record,type,parsed.wrapper.data,'after');
+      capture(record,type,parsed.wrapper.data,'after',context.message);
       const result=packet(parsed.kind,parsed.id,parsed.wrapper);
       // Shadow the native event's data getter: retain target, ordering, isTrusted and listeners.
       Object.defineProperty(event,'data',{configurable:true,value:result.buffer});
       api.stats.modified++;
       report(record,'modified');
-    }catch(exception){error(state,'incoming hook',exception,record);}
+    }catch(exception){if(!context.message)capture(record,type,parsed.wrapper.data);error(state,'incoming hook',exception,record);}
   }
   function cleanup(state){
     state.active=false;state.pending.clear();
@@ -230,7 +218,6 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
         report(result.record,'blocked',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
         // Unity records its waiting callback after send() returns; defer the local response.
         scope.queueMicrotask(()=>{
-          if(!state.active||!api.active||socket.readyState!==NativeSocket.OPEN)return;
           for (const item of [{data:result.synthetic},...result.notifications]) {
             if (!state.active || !api.active || socket.readyState!==NativeSocket.OPEN) break;
             const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(socket.url).origin});

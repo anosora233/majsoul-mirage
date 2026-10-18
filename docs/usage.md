@@ -1,4 +1,4 @@
-# WebSocket Cosmetics 0.4.10
+# WebSocket Cosmetics 0.4.11
 
 安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
 保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
@@ -21,7 +21,7 @@
 
 ## 状态与日志
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.10` 和 `[MajsoulWS] cosmetics.ready`。
+安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.11` 和 `[MajsoulWS] cosmetics.ready`。
 默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
 
 ```text
@@ -76,7 +76,7 @@ majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
 响应按每条连接自己的请求编号匹配；每条连接最多保留 4096 个等待项，
 两分钟后在下一次处理协议帧时清除。
 
-脚本约 45 KB，内置裁剪后的业务定义和 cfg；通过油猴 `@require` 加载固定版本
+脚本约 40 KB，内置裁剪后的业务定义和 cfg；通过油猴 `@require` 加载固定版本
 protobuf.js light 8.8.1，这是唯一外部运行依赖。不需要单独加载 Long，
 当前选择的字段不含 64 位整数，其他字段保留原始字节。
 没有完整协议表、Unity 解析器或 Lua 运行时。protobuf.js 负责编解码，未选中的字段作为原始未知字段保留。

@@ -23,7 +23,7 @@ class NativeSocket extends EventTarget {
 }
 async function test(){
   const output=[],logs=[],warnings=[],scope={WebSocket:NativeSocket,MessageEvent,queueMicrotask,console:{info(...a){output.push(a);logs.push(a.join(' '));},warn(...a){warnings.push(a.join(' '));}}};
-  const api=installWebSocketHook(scope,protobuf,schema,map);
+  const api=installWebSocketHook(scope,protobuf,root,map);
   assert.equal(api.log,true);logs.length=0;
   assert.equal(api.debug,false);assert(!('recent' in api));
   assert.equal(installWebSocketHook(scope,protobuf,schema,map),api);
@@ -135,6 +135,13 @@ async function test(){
   assert.equal(output.length,stopped);
   // Read-only inspection retains decoding and matching without invoking business hooks.
   api.readOnly=true;api.debug=true;
+  const decodes={},restore=[];
+  for(const name of ['ReqUseTitle','ResCommon','NotifyAccountUpdate']){
+    const messageType=type(name);messageType.decode(new Uint8Array());
+    const originalDecode=messageType.decode;
+    messageType.decode=function(...args){decodes[name]=(decodes[name] || 0)+1;return originalDecode.apply(this,args);};
+    restore.push(()=>{messageType.decode=originalDecode;});
+  }
   const baseline={...api.stats},inspection=output.length;
   api.onRequest=api.onResponse=api.onNotify=()=>{throw Error('Read-only invoked a business hook');};
   const readRequest=request(23,'Lobby','useTitle',{title:7});
@@ -150,6 +157,8 @@ async function test(){
   const inspected=output.slice(inspection).filter(entry=>entry[0].includes(' — content'));
   assert.equal(inspected.length,3);assert.equal(inspected[0][1].before.message.title,7);
   assert(inspected.every(entry=>!entry[1].after && !entry[1].response));
+  assert.deepEqual(decodes,{ReqUseTitle:1,ResCommon:1,NotifyAccountUpdate:1},'Debug inspection reuses decoded messages');
+  restore.forEach(reset=>reset());
   api.readOnly=false;api.debug=false;api.onRequest=()=>({respond:{}});
   const resumed=a.sent.length;a.send(request(24,'Lobby','useTitle',{title:7}));
   assert.equal(a.sent.length,resumed);await Promise.resolve();

@@ -4,10 +4,12 @@
 
 业务逻辑在 `src/cosmetic-hook.cjs`，传输层在 `src/websocket-core.cjs`，
 配置适配在 `src/cfg-snapshot.cjs`。修改源码后运行 `npm run build`，不要直接编辑生成文件。
-发布时同步修改 `package.json` 的版本和传输层 API 的版本，再构建、测试并保留最终产物。
+发布时修改 `package.json` 的版本，再构建、测试并保留最终产物；脚本元数据和 API 版本由构建统一注入。
 
 `scripts/build-websocket-userscript.cjs` 生成正式用户脚本。
 cfg 数字列表以差值和 base36 存储；应用代码保留变量名、注释和缩进。
+协议字段以 `[名称, 编号, 标量类型或消息索引, repeated 编码]` 存储，方法映射仅保存消息索引。
+`src/protocol.cjs` 在启动时还原 protobuf.js 定义；测试逐项比较还原前后的协议及方法映射。
 protobuf.js 通过固定版本 `@require` 加载；更换依赖版本时同步修改元数据、开发依赖和测试中的 URL 断言。
 
 请求 Hook 返回 `{respond:{}}` 时阻止原请求，并派发空的本地响应结束等待。
