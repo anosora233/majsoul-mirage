@@ -1,0 +1,18 @@
+# Installed dependencies, downloads and temporary test output.
+node_modules/
+.cache/
+.venv/
+__pycache__/
+*.pyc
+*.tmp
+*.download
+/data/*.json
+
+# Retired experiments remain local; the maintained project does not depend on them.
+/archive/
+
+# Editor and OS files.
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -1,0 +1,93 @@
+const assert=require('node:assert/strict'),fs=require('node:fs');
+const protobuf=require('protobufjs');
+protobuf.util.Long=require('long');protobuf.configure();
+const schema=require('../data/game-protocol.json'),map=require('../data/proto-config.json');
+const {installWebSocketHook}=require('../src/websocket-core.cjs');
+const root=protobuf.Root.fromJSON(schema).resolveAll(),wrapper=root.lookupType('lq.Wrapper');
+const type=name=>root.lookupType('lq.'+name);
+const raw=(t,obj)=>t.encode(t.fromObject(obj)).finish();
+const concat=(...a)=>Buffer.concat(a.map(b=>Buffer.from(b)));
+function frame(kind,id,name,data,extra){const body=concat(raw(wrapper,{name,data}),extra||[]),header=Buffer.alloc(kind===1?1:3);header[0]=kind;if(kind!==1)header.writeUInt16LE(id,1);return concat(header,body);}
+const request=(id,s,m,obj={})=>frame(2,id,'.lq.'+s+'.'+m,raw(type(map.service[s][m].request),obj));
+const response=(id,s,m,obj={})=>frame(3,id,'',raw(type(map.service[s][m].response),obj));
+function decodeFrame(data){const b=Buffer.from(data),head=b[0]===1?1:3;const r=protobuf.Reader.create(b.subarray(head));r.discardUnknown=false;return {kind:b[0],id:head===3?b.readUInt16LE(1):null,wrapper:wrapper.decode(r)};}
+function decode(t,data){const r=protobuf.Reader.create(data);r.discardUnknown=false;return t.decode(r);}
+class NativeSocket extends EventTarget {
+  static OPEN=1; static CONNECTING=0; static CLOSED=3;
+  constructor(url){super();this.url=url;this.readyState=1;this.sent=[];this._handler=null;}
+  get onmessage(){return this._handler;}
+  set onmessage(fn){if(this._handler)this.removeEventListener('message',this._handler);this._handler=fn;if(fn)this.addEventListener('message',fn);}
+  send(data){if(this.readyState===0)throw new DOMException('Connecting','InvalidStateError');if(this.readyState===3)return;this.sent.push(data);}
+  receive(data){const b=Buffer.from(data);const event=new MessageEvent('message',{data:b.buffer.slice(b.byteOffset,b.byteOffset+b.byteLength)});this.dispatchEvent(event);return event;}
+  close(){this.readyState=3;this.dispatchEvent(new Event('close'));}
+}
+async function test(){
+  const warnings=[],scope={WebSocket:NativeSocket,MessageEvent,queueMicrotask,console:{info(){},warn(...a){warnings.push(a);}}};
+  const api=installWebSocketHook(scope,protobuf,schema,map);
+  assert.equal(installWebSocketHook(scope,protobuf,schema,map),api);
+  assert.equal(scope.WebSocket.OPEN,NativeSocket.OPEN);
+  const a=new scope.WebSocket('wss://example.invalid/a'),b=new scope.WebSocket('wss://example.invalid/b');
+  assert(a instanceof NativeSocket);
+  let received;const events=[];
+  a.onmessage=function(e){assert.equal(this,a);received=e.data;events.push(e);};
+  let other; a.addEventListener('message',e=>{other=e.data;});
+  // Native send gets the identical typed-array object in default pass-through mode.
+  const q=request(7,'Lobby','fetchInfo');a.send(q);assert.equal(a.sent.at(-1),q);
+  const passthrough=response(7,'Lobby','fetchInfo',{character_info:{main_character_id:200007}});
+  const event=a.receive(passthrough);assert.equal(event.data,received);assert.deepEqual(Buffer.from(received),passthrough);
+  // Unknown nested/root/wrapper fields must survive a business object mutation.
+  const unknown=protobuf.Writer.create().uint32(900*8).uint64('9007199254740993').finish();
+  const account=concat(raw(type('Account'),{account_id:1,title:2}),unknown);
+  const login=concat(raw(type('ResLogin'),{account_id:1}),protobuf.Writer.create().uint32((type('ResLogin').fields.account.id<<3)|2).bytes(account).finish(),unknown);
+  api.onResponse=ctx=>{if(ctx.method==='login'){assert.equal(ctx.message.account.title,2);ctx.message.account.title=99;return true;}};
+  a.send(request(8,'Lobby','login'));
+  const modified=a.receive(frame(3,8,'',login,unknown));
+  assert.equal(modified,events.at(-1));assert.equal(modified.data,other);
+  const parsed=decodeFrame(received),decoded=decode(type('ResLogin'),parsed.wrapper.data);
+  assert.equal(decoded.account.title,99);assert.deepEqual(Buffer.from(decoded.$unknowns[0]),Buffer.from(unknown));
+  assert.deepEqual(Buffer.from(decoded.account.$unknowns[0]),Buffer.from(unknown));
+  assert.deepEqual(Buffer.from(parsed.wrapper.$unknowns[0]),Buffer.from(unknown));
+  // Connection-local request ID matching, including out-of-order responses.
+  const matched=[];api.onResponse=ctx=>{matched.push([ctx.connection,ctx.method]);};
+  a.send(request(9,'Lobby','fetchInfo'));b.send(request(9,'FastTest','authGame'));
+  b.receive(response(9,'FastTest','authGame'));a.receive(response(9,'Lobby','fetchInfo'));
+  assert.deepEqual(matched,[[2,'authGame'],[1,'fetchInfo']]);
+  // 64-bit integer precision uses long, including a request rewrite.
+  api.onRequest=ctx=>{assert.equal(ctx.message.timestamp.toString(),'9007199254740993');ctx.message.platform='hook';return true;};
+  a.send(request(10,'Route','requestConnection',{timestamp:'9007199254740993',platform:'original'}));
+  let sent=decodeFrame(a.sent.at(-1)),payload=decode(type('ReqRequestConnection'),sent.wrapper.data);
+  assert.equal(payload.timestamp.toString(),'9007199254740993');assert.equal(payload.platform,'hook');
+  // Local responses use a microtask; request waiting callbacks are registered after send returns.
+  api.onRequest=ctx=>ctx.method==='useTitle'?{respond:{}}:undefined;
+  let waiting=false,localResponse;
+  a.onmessage=e=>{if(decodeFrame(e.data).id===11){assert(waiting);localResponse=decodeFrame(e.data);}};
+  const before=a.sent.length;a.send(request(11,'Lobby','useTitle',{title:5}));waiting=true;
+  assert.equal(a.sent.length,before);assert.equal(localResponse,undefined);await Promise.resolve();assert.equal(localResponse.id,11);
+  // Notification modifications are visible to native onmessage AND addEventListener.
+  api.onNotify=ctx=>{assert.equal(ctx.name,'NotifyAccountUpdate');delete ctx.message.update.character;return true;};
+  a.onmessage=e=>{received=e.data;};
+  a.receive(frame(1,null,'.lq.NotifyAccountUpdate',raw(type('NotifyAccountUpdate'),{update:{character:{}}})));
+  const notice=decode(type('NotifyAccountUpdate'),decodeFrame(received).wrapper.data);
+  assert(!Object.prototype.hasOwnProperty.call(notice.update,'character'));assert.equal(other,received);
+  // Exceptions do not leak callback details or rewrite original requests/responses.
+  api.onRequest=()=>{throw new Error('private token should not appear');};
+  const bad=request(12,'Lobby','fetchInfo');a.send(bad);assert.equal(a.sent.at(-1),bad);
+  api.onResponse=()=>{throw new Error('private account should not appear');};
+  const fallback=response(12,'Lobby','fetchInfo');a.receive(fallback);assert.deepEqual(Buffer.from(received),fallback);
+  assert(!JSON.stringify(warnings).includes('private'));
+  // Unsupported methods, malformed traffic and normal textual sockets pass unchanged.
+  api.onRequest=null;api.onResponse=null;api.onNotify=null;
+  const unsupported=frame(2,13,'.lq.Lobby.futureMethod',[]);a.send(unsupported);assert.equal(a.sent.at(-1),unsupported);
+  const unknownResponse=frame(3,13,'',[]);a.receive(unknownResponse);assert.deepEqual(Buffer.from(received),unknownResponse);
+  a.send('ordinary non-game message');assert.equal(a.sent.at(-1),'ordinary non-game message');
+  a.send(new Uint8Array([2,0,0,255]));
+  // Native errors, close cleanup and restoring original API surface.
+  const c=new scope.WebSocket('wss://example.invalid/c');c.readyState=0;assert.throws(()=>c.send(request(1,'Lobby','fetchInfo')),/Connecting/);
+  assert.equal(api.connections().find(x=>x.id===3).pending,0);c.close();b.close();
+  assert.equal(api.connections().length,1);
+  api.uninstall();assert.equal(scope.WebSocket,NativeSocket);assert.equal(scope.majsoulWS,undefined);
+  assert.equal(Object.hasOwn(a,'send'),false);a.send(q);assert.equal(a.sent.at(-1),q);
+  console.log('PASS: native event delivery, per-socket IDs, PB mutations, unknown nested fields, int64, synthetic replies, notifications, fail-through, cleanup');
+
+}
+test().catch(e=>{console.error(e);process.exitCode=1;});

@@ -1,0 +1,16 @@
+{
+  "name": "majsoul-unlock",
+  "version": "0.4.2",
+  "private": true,
+  "description": "Majsoul local cosmetic userscript over native WebSocket messages",
+  "engines": {"node": ">=20"},
+  "scripts": {
+    "build": "node scripts/build-websocket-userscript.cjs",
+    "test": "node tests/test-cfg-snapshot.cjs && node tests/test-cosmetic-hook.cjs && node tests/test-websocket.cjs",
+    "test:lua": "python tests/test-game-lua-decoder.py",
+    "cfg:update": "python scripts/update-cfg.py",
+    "resources:prepare": "python scripts/update-cfg.py --protocol",
+    "protocol:export": "python scripts/export-game-protocol.py"
+  },
+  "devDependencies": {"protobufjs": "8.8.1", "long": "5.3.2"}
+}
