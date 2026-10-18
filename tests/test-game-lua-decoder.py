@@ -69,8 +69,9 @@ lua.execute(b'''
 require('Protol.com_struct_pb')
 require('Protol.cli_lobby_pb')
 require('Protol.cli_game_pb')
+require('Protol.notify_lobby_pb')
 function decode(name, data)
-    local constructor = Protol.com_struct_pb[name] or Protol.cli_lobby_pb[name] or Protol.cli_game_pb[name]
+    local constructor = Protol.com_struct_pb[name] or Protol.cli_lobby_pb[name] or Protol.cli_game_pb[name] or Protol.notify_lobby_pb[name]
     local message = assert(constructor, name)()
     message:ParseFromString(data)
     return message
@@ -91,7 +92,7 @@ with tempfile.TemporaryDirectory(dir=ROOT / '.cache') as directory:
     messages = json.loads(destination.read_text())
     for fixture in messages:
         frame = base64.b64decode(fixture['data'])
-        wrapper = lua.globals().decode(b'Wrapper', frame[3:])
+        wrapper = lua.globals().decode(b'Wrapper', frame[1:] if frame[0] == 1 else frame[3:])
         if fixture.get('unpackedData'):
             try:
                 lua.globals().decode(b'ResFetchInfo', base64.b64decode(fixture['unpackedData']))
@@ -100,8 +101,11 @@ with tempfile.TemporaryDirectory(dir=ROOT / '.cache') as directory:
             else:
                 raise AssertionError('Old fetchInfo encoding should fail in the game decoder')
         decoded = lua.globals().decode(fixture['type'].encode(), wrapper.data)
+        if fixture['type'] == 'NotifyGameBroadcast':
+            assert decoded.seat in (1, 2)
+            assert 'emo_id' in json.loads(decoded.content)
         if fixture['type'] == 'ResFetchInfo' and decoded.character_info.characters[1]:
             assert len(decoded.character_info.characters) == 124
             assert decoded.character_info.main_character_id == 200001
             assert decoded.server_time.server_time == 123456
-print(f'PASS: game Lua decoder accepted {len(messages)} userscript responses')
+print(f'PASS: game Lua decoder accepted {len(messages)} userscript responses and notifications')

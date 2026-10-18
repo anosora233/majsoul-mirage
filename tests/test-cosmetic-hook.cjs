@@ -32,10 +32,10 @@ class Socket extends EventTarget {
 }
 async function test() {
   const fixtures = [];
-  const saved = new Map(), warnings = [];
+  const saved = new Map(), warnings = [], logs = [];
   const browser = {WebSocket:Socket, MessageEvent, queueMicrotask,
     localStorage:{getItem:key => saved.get(key) ?? null, setItem:(key, value) => saved.set(key, value)},
-    console:{info() {}, warn(...args) { warnings.push(args); }}};
+    console:{info(...args) { logs.push(args.join(' ')); }, warn(...args) { warnings.push(args); }}};
   const generated = fs.readFileSync('majsoul-websocket-hook.user.js', 'utf8');
   assert(Buffer.byteLength(generated) < 45000, 'protobuf.js must stay external');
   assert(generated.includes('// @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js'));
@@ -43,14 +43,31 @@ async function test() {
   vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
   vm.runInContext(generated, context);
   const api = browser.majsoulWS, cfg = browser.cfg;
+  assert.equal(api.log, true);
+  assert.equal(api.debug, false);
+  assert(!('recent' in api));
   const socket = new browser.WebSocket('wss://example.invalid/game');
+  const notifications = [];
   let received, id = 0;
-  socket.addEventListener('message', event => { received = event.data; });
-  async function request(service, method, value = {}, response) {
+  function listen(target) {
+    target.addEventListener('message', event => {
+      const bytes = Buffer.from(event.data);
+      if (bytes[0] === 3) received = event.data;
+      else {
+        const wrapper = type('Wrapper').decode(bytes.subarray(1));
+        notifications.push({socket:target, name:wrapper.name, data:event.data});
+        if (process.argv[2] && ['NotifyGameBroadcast','NotifyAccountUpdate','NotifyRoomPlayerUpdate'].includes(wrapper.name.slice(4))) {
+          fixtures.push({type:wrapper.name.slice(4), data:bytes.toString('base64')});
+        }
+      }
+    });
+  }
+  listen(socket);
+  async function request(service, method, value = {}, response, target = socket) {
     const pair = protocol[service][method], current = ++id;
     received = null;
-    socket.send(frame(2, current, '.lq.' + service + '.' + method, encode(pair.request, value)));
-    if (response !== undefined) socket.receive(frame(3, current, '', encode(pair.response, response)));
+    target.send(frame(2, current, '.lq.' + service + '.' + method, encode(pair.request, value)));
+    if (response !== undefined) target.receive(frame(3, current, '', encode(pair.response, response)));
     await Promise.resolve();
     if (received) {
       const fixture = {type:pair.response, data:Buffer.from(received).toString('base64')};
@@ -102,6 +119,11 @@ async function test() {
       } else assert.deepEqual(actual, expected);
     }
     if (method === 'setHiddenCharacter') assert.deepEqual(Array.from(response.hidden_characters), [200007]);
+    if (method === 'changeCharacterSkin') {
+      assert.equal(notifications.length, 1, 'Outside a room, only the account update is injected');
+      const updated = decode(notifications.at(-1).data, 'NotifyAccountUpdate').update.character.characters[0];
+      assert.equal(updated.charid, 200001); assert.equal(updated.skin, 400101);
+    }
   }
   const owned = cfg.item_definition.item.rows_[0].id;
   const info = await request('Lobby', 'fetchInfo', {}, {
@@ -123,34 +145,105 @@ async function test() {
   const players = [{account_id:42,nickname:'self',avatar_id:1,character:{charid:200007,level:1}},
     {account_id:43,nickname:'other',avatar_id:2,character:{charid:200007,level:1}}];
   for (const method of ['joinRoom','fetchRoom','createRoom']) {
-    const result = await request('Lobby', method, {}, {room:{room_id:777,persons:players}});
+    const result = await request('Lobby', method, {}, {room:{room_id:777,persons:players,owner_id:42,seq:7,positions:[42,43]}});
     assert.equal(result.room.room_id, 777);
     assert.equal(result.room.persons[0].avatar_id, 400101);
     assert.equal(result.room.persons[1].avatar_id, 2);
     assert.equal(result.room.persons[1].character.level, 5);
   }
+  async function changeSkin(charid, skin, inRoom) {
+    const sent = socket.sent.length, start = notifications.length;
+    assert(await request('Lobby', 'changeCharacterSkin', {character_id:charid, skin}));
+    assert.equal(socket.sent.length, sent);
+    const notices = notifications.slice(start);
+    assert.deepEqual(notices.map(notice => notice.name), inRoom
+      ? ['.lq.NotifyAccountUpdate','.lq.NotifyRoomPlayerUpdate'] : ['.lq.NotifyAccountUpdate']);
+    const updated = decode(notices[0].data, 'NotifyAccountUpdate').update.character.characters[0];
+    assert.equal(updated.charid, charid); assert.equal(updated.skin, skin);
+    return notices[1];
+  }
+  // Room responses initialize the cache before the first player update arrives.
+  let roomNotice = await changeSkin(200001, 400102, true);
+  let room = decode(roomNotice.data, 'NotifyRoomPlayerUpdate');
+  assert.equal(room.owner_id, 42); assert.equal(room.seq, 7);
+  assert.equal(room.player_list[0].avatar_id, 400102);
+  assert.equal(room.player_list[0].character.skin, 400102);
+  const nextPlayers = [players[0], {account_id:44,nickname:'new-player',avatar_id:4,
+    character:{charid:200007,skin:400201,level:1}}];
+  const extra = protobuf.Writer.create().uint32(900 << 3).uint32(111).finish();
+  const roomBody = Buffer.concat([Buffer.from(encode('NotifyRoomPlayerUpdate',
+    {owner_id:44,seq:9,positions:[42,44],player_list:nextPlayers})),Buffer.from(extra)]);
+  socket.receive(frame(1,0,'.lq.NotifyRoomPlayerUpdate',roomBody));
+  roomNotice = await changeSkin(200001, 400103, true);
+  room = decode(roomNotice.data, 'NotifyRoomPlayerUpdate');
+  assert.deepEqual(room.player_list.map(player => player.account_id), [42,44]);
+  assert.equal(room.owner_id, 44); assert.equal(room.seq, 9);
+  assert.equal(room.player_list[0].character.skin, 400103);
+  assert.equal(room.player_list[1].nickname, 'new-player');
+  assert.deepEqual(Array.from(room.positions), [42,44]);
+  const roomWrapper = type('Wrapper').decode(Buffer.from(roomNotice.data).subarray(1));
+  const reader = protobuf.Reader.create(roomWrapper.data); reader.discardUnknown = false;
+  assert.deepEqual(Buffer.from(type('NotifyRoomPlayerUpdate').decode(reader).$unknowns[0]), Buffer.from(extra));
+  room = decode((await changeSkin(200007,400202,true)).data, 'NotifyRoomPlayerUpdate');
+  assert.equal(room.player_list[0].character.charid, 200001);
+  assert.equal(room.player_list[0].character.skin, 400103, 'Changing another character must not replace the main skin');
+  assert.equal(room.player_list[1].character.skin, 400201, 'Other players retain their skins');
+  notify('NotifyRoomPlayerUpdate', {player_list:[nextPlayers[1]]});
+  await changeSkin(200001,400104,false);
+  await request('Lobby','fetchRoom',{}, {room:{owner_id:42,persons:nextPlayers}});
+  await request('Lobby','leaveRoom',{},{});
+  await changeSkin(200001,400101,false);
   const record = await request('Lobby', 'fetchGameRecord', {}, {head:{uuid:'keep-record',accounts:players},data_url:'keep-url'});
   assert.equal(record.head.accounts[0].title, 1001);
   assert.equal(record.head.uuid, 'keep-record'); assert.equal(record.data_url, 'keep-url');
   const account = await request('Lobby', 'fetchAccountInfo', {}, {account:{account_id:42,nickname:'self'}});
   assert.equal(account.account.avatar_id, 400101);
-  const game = await request('FastTest', 'authGame', {}, {players,seat_list:[42,43]});
+  const game = await request('FastTest', 'authGame', {account_id:42}, {players,seat_list:[43,99,42]});
   assert.equal(game.players[0].avatar_frame, 305001);
-  assert.deepEqual(Array.from(game.seat_list), [42,43]);
+  assert.deepEqual(Array.from(game.seat_list), [43,99,42]);
 
   const failed = await request('Lobby', 'fetchInfo', {}, {error:{code:123}});
   assert.equal(failed.error.code, 123); assert.equal(failed.character_info, null);
   const beforeEmoji = socket.sent.length;
-  assert(await request('FastTest', 'broadcastInGame', {content:'{"emo":10}'}));
-  assert.equal(socket.sent.length, beforeEmoji);
-  await request('FastTest', 'broadcastInGame', {content:'{"emo":9}'}, {});
-  assert.equal(socket.sent.length, beforeEmoji + 1);
-  await request('FastTest', 'broadcastInGame', {content:'invalid'}, {});
-  assert.equal(socket.sent.length, beforeEmoji + 2);
+  const beforeEmojiNotices = notifications.length, beforeLocalNotifications = api.stats.localNotifications;
+  for (const emo_id of [8,9,70004]) {
+    const content = JSON.stringify({emo_id});
+    assert(await request('FastTest', 'broadcastInGame', {content, except_self:false}));
+    const notice = notifications.at(-1);
+    assert.equal(notice.name, '.lq.NotifyGameBroadcast');
+    assert.equal(notice.socket, socket);
+    assert.equal(decode(notice.data, 'NotifyGameBroadcast').seat, 2);
+    assert.equal(decode(notice.data, 'NotifyGameBroadcast').content, content);
+  }
+  assert.equal(socket.sent.length, beforeEmoji, 'emo_id requests must stay local at every numeric ID');
+  assert.equal(notifications.length, beforeEmojiNotices + 3);
+  for (const content of ['{"emo":9}', '{"other":1}', 'invalid']) {
+    await request('FastTest', 'broadcastInGame', {content}, {});
+    assert.equal(decode(socket.sent.at(-1), 'ReqBroadcastInGame').content, content);
+  }
+  assert.equal(socket.sent.length, beforeEmoji + 3);
+  assert.equal(notifications.length, beforeEmojiNotices + 3, 'Non-emo_id broadcasts must not create local notifications');
+  const otherGame = new browser.WebSocket('wss://example.invalid/other-game'); listen(otherGame);
+  await request('FastTest', 'authGame', {account_id:43}, {players,seat_list:[42,43]}, otherGame);
+  const content = ' { "emo_id":70004, "extra":"preserved" } ';
+  api.debug = 'NotifyGameBroadcast';
+  await request('FastTest', 'broadcastInGame', {content}, undefined, otherGame);
+  api.debug = false;
+  assert.equal(otherGame.sent.length, 1, 'Only authGame should reach the server');
+  assert.equal(notifications.at(-1).socket, otherGame);
+  assert.equal(decode(notifications.at(-1).data, 'NotifyGameBroadcast').seat, 1);
+  assert.equal(decode(notifications.at(-1).data, 'NotifyGameBroadcast').content, content);
+  await request('FastTest', 'authGame', {account_id:43}, {error:{code:123}}, otherGame);
+  const beforeMissingSeat = notifications.length, beforeWarnings = warnings.length;
+  await request('FastTest', 'broadcastInGame', {content:'{"emo_id":70004}'}, undefined, otherGame);
+  assert.equal(notifications.length, beforeMissingSeat);
+  assert.equal(otherGame.sent.length, 2);
+  assert.equal(warnings.length, beforeWarnings + 1);
+  assert(warnings.at(-1)[0].includes('seat unavailable'));
 
   function notify(name, value) {
-    socket.receive(frame(1, 0, '.lq.' + name, encode(name, value)));
-    return decode(received, name);
+    const event = socket.receive(frame(1, 0, '.lq.' + name, encode(name, value)));
+    return decode(event.data, name);
   }
   const update = notify('NotifyAccountUpdate', {update:{character:{skins:[1]}, main_character:{skin_id:1},
     numerical:[{id:7,final:999}]}});
@@ -170,6 +263,14 @@ async function test() {
   assert.equal(saved.get('vip.title'), '1001');
   assert.equal(api.stats.errors, 0, JSON.stringify(warnings));
   assert(api.stats.modified > 0 && api.stats.synthetic >= 10);
+  assert.equal(api.stats.blocked, api.stats.synthetic);
+  assert(logs.some(line => line.includes('modified response Lobby.fetchInfo')));
+  assert(logs.some(line => line.includes('blocked request Lobby.useTitle') && line.includes('local response queued')));
+  assert(logs.some(line => line.includes('blocked request FastTest.broadcastInGame')));
+  assert.equal(api.stats.localNotifications, beforeLocalNotifications + 4);
+  assert(logs.some(line => line.includes('local notify NotifyGameBroadcast')));
+  assert(logs.some(line => line.includes('modified notify NotifyAccountUpdate')));
+  assert(!logs.some(line => line.includes('pass ') || line.includes('keep-token') || line.includes('keep-name')));
   api.uninstall(); assert.equal(browser.WebSocket, Socket);
   if (process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify(fixtures));
   console.log('PASS: generated cosmetic script, all prod.js branches, local storage and responses, unknown fields, errors, native passthrough');

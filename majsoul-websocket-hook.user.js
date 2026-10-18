@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Majsoul WebSocket Cosmetics
 // @namespace    majsoul-local-hook
-// @version      0.4.2
+// @version      0.4.9
 // @description  Local cosmetic customization with a bundled cfg snapshot.
 // @match        https://game.maj-soul.com/1/*
 // @run-at       document-start
@@ -207,11 +207,10 @@
     const sockets = new Map();
     const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
     const api = {
-      version: '0.4.2', active: true, log: false,
+      version: '0.4.9', active: true, log: true, debug: false,
       onRequest: null, onResponse: null, onNotify: null,
       stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
-        modified: 0, synthetic: 0, unsupported: 0, errors: 0 },
-      recent: [],
+        modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
       lookupType(name) { return root.lookupType(name.startsWith('.') ? name : 'lq.' + name); },
       createRequest(service, method, object = {}) {
         const pair = getTypes(service, method);
@@ -272,15 +271,42 @@
       return {kind,id:header===3?new DataView(b.buffer,b.byteOffset,b.byteLength).getUint16(1,true):null,
         wrapper:decode(wrapperType,b.subarray(header))};
     }
-    function remember(state, direction, service, method, id) {
-      api.recent.push({connection:state.id,direction,service,method,id});
-      if (api.recent.length > 100) api.recent.shift();
-      if (api.log) scope.console.info('[MajsoulWS]',direction,service ? service+'.'+method : method,id);
+    function metadata(state, direction, service, method, id) {
+      return {connection:state.id,direction,service,method,id,action:'pass'};
     }
-    function error(state, stage, exception) {
+    function capture(record, type, payload, phase = 'before') {
+      const name = '.lq.'+(record.service ? record.service+'.'+record.method : record.method);
+      if (api.debug !== true && !(typeof api.debug === 'string' && api.debug && name.includes(api.debug))) return;
+      const snapshot = {bytes:Uint8Array.from(payload)};
+      if (type) {
+        try { snapshot.message = type.toObject(decode(type,payload),{longs:String,bytes:String,enums:String}); }
+        catch (exception) { snapshot.error = exception.name; }
+      }
+      (record.content ||= {})[phase] = snapshot;
+    }
+    function dump(record) {
+      if (record.content) scope.console.info(format(record)+' — content',record.content);
+    }
+    function format(record, detail = '') {
+      const name = record.service ? record.service+'.'+record.method : record.method || '<unknown>';
+      const id = record.id == null ? '' : ' #'+record.id;
+      return '[MajsoulWS] '+record.action+' '+record.direction+' '+name
+        +' [ws:'+record.connection+id+']'+(detail ? ' — '+detail : '');
+    }
+    function report(record, action, detail = '') {
+      record.action = action;
+      if (detail) record.detail = detail;
+      if (api.log && (action !== 'pass' || api.log === 'all')) scope.console.info(format(record, detail));
+      dump(record);
+    }
+    function error(state, stage, exception, record) {
       api.stats.errors++;
-      // Do not log frames, login tokens, decoded account objects or user callbacks' messages.
-      scope.console.warn('[MajsoulWS]',stage,'failed; original message retained.',{connection:state.id,error:exception.name||'Error'});
+      // Exception text stays private; explicitly enabled debugging prints captured message snapshots.
+      record ||= {connection:state.id,direction:'frame',method:null,id:null};
+      record.action = 'error';
+      record.detail = stage+' ('+(exception.name || 'Error')+'); original retained';
+      scope.console.warn(format(record, record.detail));
+      dump(record);
     }
     function expire(state) {
       const now=Date.now();
@@ -301,23 +327,37 @@
       state.recognized=true;expire(state);
       const service=match[1],method=match[2],types=getTypes(service,method);
       const pending={service,method,types,created:Date.now()};
-      api.stats.requests++;remember(state,'request',service,method,parsed.id);
-      if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id};}
-      if(typeof api.onRequest!=='function')return{data,pending,id:parsed.id};
-      const message=decode(types.request,parsed.wrapper.data);
+      api.stats.requests++;
+      const record=metadata(state,'request',service,method,parsed.id);
+      capture(record,types?.request,parsed.wrapper.data);
+      if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id,record};}
+      if(typeof api.onRequest!=='function')return{data,pending,id:parsed.id,record};
+      let message;
+      try { message=decode(types.request,parsed.wrapper.data); }
+      catch(exception){error(state,'request decode',exception,record);return{data,pending,id:parsed.id,record};}
       const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
       let action;
-      try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception);return{data,pending,id:parsed.id};}
+      try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return{data,pending,id:parsed.id,record};}
       try {
         if(action&&Object.prototype.hasOwnProperty.call(action,'respond')){
           if(!action.respond||typeof action.respond!=='object'||Array.isArray(action.respond))throw new TypeError('Local response must be an object');
           const response=types.response.fromObject(action.respond);
           const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
-          return{synthetic:packet(3,parsed.id,wrapper)};
+          capture(record,types.response,wrapper.data,'response');
+          const notifications=(Array.isArray(action.notify) ? action.notify : action.notify ? [action.notify] : []).map(notice=>{
+            const type=api.lookupType(notice.name);
+            const payload=encode(type,type.fromObject(notice.message || {}));
+            return{type,payload,data:packet(1,null,wrapperType.create({name:type.fullName,data:payload}))};
+          });
+          return{synthetic:packet(3,parsed.id,wrapper),notifications,record};
         }
-        if(action===true){parsed.wrapper.data=encode(types.request,message);return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true};}
-      } catch(exception) { error(state,'request hook encode',exception); }
-      return{data,pending,id:parsed.id};
+        if(action===true){
+          parsed.wrapper.data=encode(types.request,message);
+          capture(record,types.request,parsed.wrapper.data,'after');
+          return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true,record};
+        }
+      } catch(exception) { error(state,'request hook encode',exception,record); }
+      return{data,pending,id:parsed.id,record};
     }
     function incoming(state,event) {
       if(!state.active||!api.active||state.syntheticEvents.has(event))return;
@@ -325,32 +365,38 @@
       try{parsed=parse(event.data);}catch(exception){if(state.recognized)error(state,'frame decode',exception);return;}
       if(!parsed)return;
       expire(state);
-      let type,context,handler;
+      let type,context,handler,record;
       if(parsed.kind===3){
         const entry=state.pending.get(parsed.id);if(!entry)return;
         state.pending.delete(parsed.id);api.stats.responses++;
-        remember(state,'response',entry.service,entry.method,parsed.id);
-        if(!entry.types){api.stats.unsupported++;return;}
+        record=metadata(state,'response',entry.service,entry.method,parsed.id);
+        if(!entry.types){api.stats.unsupported++;capture(record,null,parsed.wrapper.data);report(record,'pass');return;}
         type=entry.types.response;handler=api.onResponse;
         context={socket:state.socket,connection:state.id,service:entry.service,method:entry.method,id:parsed.id};
       }else if(parsed.kind===1){
         if(!/^\.lq\.[A-Za-z_][\w.]*$/.test(parsed.wrapper.name))return;
         const name=parsed.wrapper.name.slice(4);
-        try{type=root.lookupType('lq.'+name);}catch{api.stats.unsupported++;return;}
+        record=metadata(state,'notify',null,name,null);
+        try{type=root.lookupType('lq.'+name);}catch{
+          api.stats.unsupported++;capture(record,null,parsed.wrapper.data);report(record,'pass');return;
+        }
         state.recognized=true;api.stats.notifications++;
-        remember(state,'notify',null,name,null);handler=api.onNotify;
+        handler=api.onNotify;
         context={socket:state.socket,connection:state.id,name};
       }else return;
-      if(typeof handler!=='function')return;
+      capture(record,type,parsed.wrapper.data);
+      if(typeof handler!=='function'){report(record,'pass');return;}
       try{
         context.message=decode(type,parsed.wrapper.data);
-        if(call(handler,context)!==true)return;
+        if(call(handler,context)!==true){report(record,'pass');return;}
         parsed.wrapper.data=encode(type,context.message);
+        capture(record,type,parsed.wrapper.data,'after');
         const result=packet(parsed.kind,parsed.id,parsed.wrapper);
         // Shadow the native event's data getter: retain target, ordering, isTrusted and listeners.
         Object.defineProperty(event,'data',{configurable:true,value:result.buffer});
         api.stats.modified++;
-      }catch(exception){error(state,'incoming hook',exception);}
+        report(record,'modified');
+      }catch(exception){error(state,'incoming hook',exception,record);}
     }
     function cleanup(state){
       state.active=false;state.pending.clear();
@@ -375,18 +421,29 @@
         try{result=outgoing(state,data);}catch(exception){error(state,'request decode/encode',exception);return Reflect.apply(nativeSend,this,arguments);}
         if(result.synthetic){
           if(socket.readyState!==NativeSocket.OPEN)return Reflect.apply(nativeSend,this,arguments);
-          api.stats.synthetic++;
+          api.stats.blocked++;api.stats.synthetic++;
+          report(result.record,'blocked',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
           // Unity records its waiting callback after send() returns; defer the local response.
           scope.queueMicrotask(()=>{
             if(!state.active||!api.active||socket.readyState!==NativeSocket.OPEN)return;
-            const event=new scope.MessageEvent('message',{data:result.synthetic.buffer,origin:new URL(socket.url).origin});
-            state.syntheticEvents.add(event);socket.dispatchEvent(event);
+            for (const item of [{data:result.synthetic},...result.notifications]) {
+              if (!state.active || !api.active || socket.readyState!==NativeSocket.OPEN) break;
+              const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(socket.url).origin});
+              state.syntheticEvents.add(event);socket.dispatchEvent(event);
+              if (item.type) {
+                api.stats.localNotifications++;
+                const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
+                capture(record,item.type,item.payload);
+                report(record,'local','synthetic notification');
+              }
+            }
           });
           return;
         }
         const returned=Reflect.apply(nativeSend,this,result.modified?[result.data]:arguments);
         if(result.pending)state.pending.set(result.id,result.pending);
         if(result.modified)api.stats.modified++;
+        if(result.record && result.record.action!=='error')report(result.record,result.modified?'modified':'pass');
         return returned;
       };
       socket.send=state.send;sockets.set(socket,state);
@@ -409,6 +466,8 @@
     }
     function set(name, value, id) { storage.setItem(key(name, id), JSON.stringify(value)); }
     const definitions = cfg.item_definition;
+    const games = new WeakMap();
+    let roomUpdate = null;
     const ids = table => Object.keys(table.map_).map(Number);
     const mainId = () => get('main', 200007);
     const selectedViews = () => get('views', {}, get('use', 0)).values || [];
@@ -439,6 +498,11 @@
       }
       return changed;
     }
+    function updateRoom(message) {
+      const changed = override(message?.player_list);
+      roomUpdate = message?.player_list?.some(player => player.account_id === get('account', null)) ? message : null;
+      return changed;
+    }
     const localRequests = {
       useTitle: message => set('title', message.title),
       setLoadingImage: message => set('loading', message.images),
@@ -450,24 +514,50 @@
       saveCommonViews: message => set('views', {values:message.views, index:message.save_index}, message.save_index),
       addFinishedEnding() {}
     };
-    api.onRequest = ({service, method, message}) => {
+    api.onRequest = ({socket, service, method, message}) => {
       if (service === 'Lobby' && Object.hasOwn(localRequests, method)) {
         const response = localRequests[method](message);
+        if (method === 'changeCharacterSkin') {
+          const notify = [{name:'NotifyAccountUpdate',
+            message:{update:{character:{characters:[character(message.character_id)]}}}}];
+          if (roomUpdate) {
+            override(roomUpdate.player_list);
+            notify.push({name:'NotifyRoomPlayerUpdate', message:roomUpdate});
+          }
+          return {respond:{}, notify};
+        }
         return {respond:response || {}};
+      }
+      if (service === 'FastTest' && method === 'authGame') {
+        games.set(socket, {account:message.account_id || get('account', 0), seat:-1});
       }
       if (service === 'FastTest' && method === 'broadcastInGame') {
         let content;
         try { content = JSON.parse(message.content); } catch { return; }
-        if (content?.emo > 9) return {respond:{}};
+        if (!Number.isInteger(content?.emo_id)) return;
+        const seat = games.get(socket)?.seat ?? -1;
+        if (seat < 0) {
+          scope.console.warn('[MajsoulWS] emoji.skipped — seat unavailable');
+          return {respond:{}};
+        }
+        return {respond:{}, notify:{name:'NotifyGameBroadcast', message:{seat, content:message.content}}};
       }
     };
-    api.onResponse = ({service, method, message}) => {
+    api.onResponse = ({socket, service, method, message}) => {
       if (message.error?.code) return;
-      if (service === 'FastTest') return method === 'authGame' && override(message.players);
+      if (service === 'FastTest') {
+        if (method !== 'authGame') return;
+        const account = games.get(socket)?.account || get('account', 0);
+        games.set(socket, {account, seat:account ? message.seat_list.indexOf(account) : -1});
+        return override(message.players);
+      }
       if (service !== 'Lobby') return;
       switch (method) {
         case 'login': case 'emailLogin': case 'oauth2Login':
-          if (message.account_id) set('account', message.account_id);
+          if (message.account_id) {
+            if (message.account_id !== get('account', null)) roomUpdate = null;
+            set('account', message.account_id);
+          }
           return override([message.account]);
         case 'fetchInfo': {
           message.character_info = Object.assign(message.character_info || {}, {send_gift_count:0, send_gift_limit:2,
@@ -485,7 +575,13 @@
             .map(item => ({item_id:item.id, stack:1})), ...(bag.items || [])];
           return true;
         }
-        case 'joinRoom': case 'fetchRoom': case 'createRoom': return override(message.room?.persons);
+        case 'joinRoom': case 'fetchRoom': case 'createRoom': {
+          const room = message.room;
+          if (!room) { roomUpdate = null; return; }
+          return updateRoom(api.lookupType('NotifyRoomPlayerUpdate').fromObject({player_list:room.persons,
+            owner_id:room.owner_id, robot_count:room.robot_count, seq:room.seq, robots:room.robots, positions:room.positions}));
+        }
+        case 'leaveRoom': roomUpdate = null; return;
         case 'fetchGameRecord': return override(message.head?.accounts);
         case 'fetchAccountInfo': return override([message.account]);
       }
@@ -497,7 +593,7 @@
           delete message.update.character;
           delete message.update.main_character;
           return true;
-        case 'NotifyRoomPlayerUpdate': return override(message.player_list);
+        case 'NotifyRoomPlayerUpdate': return updateRoom(message);
         case 'NotifyGameFinishRewardV2':
           if (!message.main_character) return;
           Object.assign(message.main_character, {exp:1, add:0, level:5});
@@ -509,6 +605,6 @@
   }
   
   const cfg = installConfigSnapshot(window);
-  const api = installWebSocketHook(window, window.protobuf, {"nested":{"lq":{"nested":{"Wrapper":{"edition":"proto2","fields":{"name":{"type":"string","id":1},"data":{"type":"bytes","id":2}}},"ReqLogin":{"edition":"proto2","fields":{}},"ResLogin":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"account_id":{"type":"uint32","id":2},"account":{"type":".lq.Account","id":3}}},"Error":{"edition":"proto2","fields":{"code":{"type":"uint32","id":1},"u32_params":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}},"str_params":{"rule":"repeated","type":"string","id":3,"options":{"packed":false}},"json_param":{"type":"string","id":4},"level":{"type":"uint32","id":5},"message":{"type":"string","id":6}}},"Account":{"edition":"proto2","fields":{"account_id":{"type":"uint32","id":1},"title":{"type":"uint32","id":7},"avatar_id":{"type":"uint32","id":13},"avatar_frame":{"type":"uint32","id":23},"loading_image":{"rule":"repeated","type":"uint32","id":30,"options":{"packed":true}}}},"ReqEmailLogin":{"edition":"proto2","fields":{}},"ReqOauth2Login":{"edition":"proto2","fields":{}},"ReqCommon":{"edition":"proto2","fields":{}},"ResFetchInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"title_list":{"type":".lq.ResTitleList","id":10},"bag_info":{"type":".lq.ResBagInfo","id":11},"character_info":{"type":".lq.ResCharacterInfo","id":27},"all_common_views":{"type":".lq.ResAllcommonViews","id":28}}},"ResTitleList":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"title_list":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}}}},"ResBagInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"bag":{"type":".lq.Bag","id":2}}},"Bag":{"edition":"proto2","fields":{"items":{"rule":"repeated","type":".lq.Item","id":1}}},"Item":{"edition":"proto2","fields":{"item_id":{"type":"uint32","id":1},"stack":{"type":"uint32","id":2}}},"ResCharacterInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"characters":{"rule":"repeated","type":".lq.Character","id":2},"skins":{"rule":"repeated","type":"uint32","id":3,"options":{"packed":true}},"main_character_id":{"type":"uint32","id":4},"send_gift_count":{"type":"uint32","id":5},"send_gift_limit":{"type":"uint32","id":6},"finished_endings":{"rule":"repeated","type":"uint32","id":7,"options":{"packed":true}},"rewarded_endings":{"rule":"repeated","type":"uint32","id":8,"options":{"packed":true}},"character_sort":{"rule":"repeated","type":"uint32","id":9,"options":{"packed":true}},"hidden_characters":{"rule":"repeated","type":"uint32","id":10,"options":{"packed":true}},"other_character_sort":{"rule":"repeated","type":"uint32","id":11,"options":{"packed":true}}}},"Character":{"edition":"proto2","fields":{"charid":{"type":"uint32","id":1},"level":{"type":"uint32","id":2},"exp":{"type":"uint32","id":3},"views":{"rule":"repeated","type":".lq.ViewSlot","id":4},"skin":{"type":"uint32","id":5},"is_upgraded":{"type":"bool","id":6},"extra_emoji":{"rule":"repeated","type":"uint32","id":7,"options":{"packed":true}},"rewarded_level":{"rule":"repeated","type":"uint32","id":8,"options":{"packed":true}},"enabled_emoji":{"rule":"repeated","type":"uint32","id":9,"options":{"packed":true}}}},"ViewSlot":{"edition":"proto2","fields":{"slot":{"type":"uint32","id":1},"item_id":{"type":"uint32","id":2},"type":{"type":"uint32","id":3},"item_id_list":{"rule":"repeated","type":"uint32","id":4,"options":{"packed":true}}}},"ResAllcommonViews":{"edition":"proto2","fields":{"views":{"rule":"repeated","type":".lq.ResAllcommonViews.Views","id":1},"use":{"type":"uint32","id":2},"error":{"type":".lq.Error","id":3}},"nested":{"Views":{"fields":{"values":{"rule":"repeated","type":".lq.ViewSlot","id":1},"index":{"type":"uint32","id":2},"name":{"type":"string","id":3}}}}},"ReqJoinRoom":{"edition":"proto2","fields":{}},"ResJoinRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"Room":{"edition":"proto2","fields":{"persons":{"rule":"repeated","type":".lq.PlayerGameView","id":5}}},"PlayerGameView":{"edition":"proto2","fields":{"account_id":{"type":"uint32","id":1},"avatar_id":{"type":"uint32","id":2},"title":{"type":"uint32","id":3},"character":{"type":".lq.Character","id":6},"avatar_frame":{"type":"uint32","id":8},"views":{"rule":"repeated","type":".lq.ViewSlot","id":10}}},"ResSelfRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"ReqCreateRoom":{"edition":"proto2","fields":{}},"ResCreateRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"ReqGameRecord":{"edition":"proto2","fields":{}},"ResGameRecord":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"head":{"type":".lq.RecordGame","id":3}}},"RecordGame":{"edition":"proto2","fields":{"accounts":{"rule":"repeated","type":".lq.RecordGame.AccountInfo","id":11}},"nested":{"AccountInfo":{"fields":{"account_id":{"type":"uint32","id":1},"avatar_id":{"type":"uint32","id":4},"character":{"type":".lq.Character","id":5},"title":{"type":"uint32","id":6},"avatar_frame":{"type":"uint32","id":9},"views":{"rule":"repeated","type":".lq.ViewSlot","id":11}}}}},"ReqAccountInfo":{"edition":"proto2","fields":{}},"ResAccountInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"account":{"type":".lq.Account","id":2}}},"ReqUseTitle":{"edition":"proto2","fields":{"title":{"type":"uint32","id":1}}},"ResCommon":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1}}},"ReqSetLoadingImage":{"edition":"proto2","fields":{"images":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}}}},"ReqChangeMainCharacter":{"edition":"proto2","fields":{"character_id":{"type":"uint32","id":1}}},"ReqChangeCharacterSkin":{"edition":"proto2","fields":{"character_id":{"type":"uint32","id":1},"skin":{"type":"uint32","id":2}}},"ReqUpdateCharacterSort":{"edition":"proto2","fields":{"sort":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}},"other_sort":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}},"hidden_characters":{"rule":"repeated","type":"uint32","id":3,"options":{"packed":true}}}},"ReqSetHiddenCharacter":{"edition":"proto2","fields":{"chara_list":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}}}},"ResSetHiddenCharacter":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"hidden_characters":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}}}},"ReqUseCommonView":{"edition":"proto2","fields":{"index":{"type":"uint32","id":3}}},"ReqSaveCommonViews":{"edition":"proto2","fields":{"views":{"rule":"repeated","type":".lq.ViewSlot","id":1},"save_index":{"type":"uint32","id":2},"is_use":{"type":"uint32","id":3},"name":{"type":"string","id":4}}},"ReqFinishedEnding":{"edition":"proto2","fields":{}},"ReqAuthGame":{"edition":"proto2","fields":{}},"ResAuthGame":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"players":{"rule":"repeated","type":".lq.PlayerGameView","id":2}}},"ReqBroadcastInGame":{"edition":"proto2","fields":{"content":{"type":"string","id":1},"except_self":{"type":"bool","id":2}}},"NotifyAccountUpdate":{"edition":"proto2","fields":{"update":{"type":".lq.AccountUpdate","id":1}}},"AccountUpdate":{"edition":"proto2","fields":{"character":{"type":".lq.AccountUpdate.CharacterUpdate","id":2},"main_character":{"type":".lq.AccountUpdate.MainCharacterUpdate","id":18}},"nested":{"CharacterUpdate":{"fields":{}},"MainCharacterUpdate":{"fields":{}}}},"NotifyRoomPlayerUpdate":{"edition":"proto2","fields":{"player_list":{"rule":"repeated","type":".lq.PlayerGameView","id":5}}},"NotifyGameFinishRewardV2":{"edition":"proto2","fields":{"main_character":{"type":".lq.NotifyGameFinishRewardV2.MainCharacter","id":4}},"nested":{"MainCharacter":{"fields":{"level":{"type":"uint32","id":1},"exp":{"type":"uint32","id":2},"add":{"type":"uint32","id":3}}}}}}}}}, {"service":{"Lobby":{"login":{"request":"ReqLogin","response":"ResLogin"},"emailLogin":{"request":"ReqEmailLogin","response":"ResLogin"},"oauth2Login":{"request":"ReqOauth2Login","response":"ResLogin"},"fetchInfo":{"request":"ReqCommon","response":"ResFetchInfo"},"joinRoom":{"request":"ReqJoinRoom","response":"ResJoinRoom"},"fetchRoom":{"request":"ReqCommon","response":"ResSelfRoom"},"createRoom":{"request":"ReqCreateRoom","response":"ResCreateRoom"},"fetchGameRecord":{"request":"ReqGameRecord","response":"ResGameRecord"},"fetchAccountInfo":{"request":"ReqAccountInfo","response":"ResAccountInfo"},"useTitle":{"request":"ReqUseTitle","response":"ResCommon"},"setLoadingImage":{"request":"ReqSetLoadingImage","response":"ResCommon"},"changeMainCharacter":{"request":"ReqChangeMainCharacter","response":"ResCommon"},"changeCharacterSkin":{"request":"ReqChangeCharacterSkin","response":"ResCommon"},"updateCharacterSort":{"request":"ReqUpdateCharacterSort","response":"ResCommon"},"setHiddenCharacter":{"request":"ReqSetHiddenCharacter","response":"ResSetHiddenCharacter"},"useCommonView":{"request":"ReqUseCommonView","response":"ResCommon"},"saveCommonViews":{"request":"ReqSaveCommonViews","response":"ResCommon"},"addFinishedEnding":{"request":"ReqFinishedEnding","response":"ResCommon"}},"FastTest":{"authGame":{"request":"ReqAuthGame","response":"ResAuthGame"},"broadcastInGame":{"request":"ReqBroadcastInGame","response":"ResCommon"}}}});
+  const api = installWebSocketHook(window, window.protobuf, {"nested":{"lq":{"nested":{"Wrapper":{"edition":"proto2","fields":{"name":{"type":"string","id":1},"data":{"type":"bytes","id":2}}},"ReqLogin":{"edition":"proto2","fields":{}},"ResLogin":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"account_id":{"type":"uint32","id":2},"account":{"type":".lq.Account","id":3}}},"Error":{"edition":"proto2","fields":{"code":{"type":"uint32","id":1},"u32_params":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}},"str_params":{"rule":"repeated","type":"string","id":3,"options":{"packed":false}},"json_param":{"type":"string","id":4},"level":{"type":"uint32","id":5},"message":{"type":"string","id":6}}},"Account":{"edition":"proto2","fields":{"account_id":{"type":"uint32","id":1},"title":{"type":"uint32","id":7},"avatar_id":{"type":"uint32","id":13},"avatar_frame":{"type":"uint32","id":23},"loading_image":{"rule":"repeated","type":"uint32","id":30,"options":{"packed":true}}}},"ReqEmailLogin":{"edition":"proto2","fields":{}},"ReqOauth2Login":{"edition":"proto2","fields":{}},"ReqCommon":{"edition":"proto2","fields":{}},"ResFetchInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"title_list":{"type":".lq.ResTitleList","id":10},"bag_info":{"type":".lq.ResBagInfo","id":11},"character_info":{"type":".lq.ResCharacterInfo","id":27},"all_common_views":{"type":".lq.ResAllcommonViews","id":28}}},"ResTitleList":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"title_list":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}}}},"ResBagInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"bag":{"type":".lq.Bag","id":2}}},"Bag":{"edition":"proto2","fields":{"items":{"rule":"repeated","type":".lq.Item","id":1}}},"Item":{"edition":"proto2","fields":{"item_id":{"type":"uint32","id":1},"stack":{"type":"uint32","id":2}}},"ResCharacterInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"characters":{"rule":"repeated","type":".lq.Character","id":2},"skins":{"rule":"repeated","type":"uint32","id":3,"options":{"packed":true}},"main_character_id":{"type":"uint32","id":4},"send_gift_count":{"type":"uint32","id":5},"send_gift_limit":{"type":"uint32","id":6},"finished_endings":{"rule":"repeated","type":"uint32","id":7,"options":{"packed":true}},"rewarded_endings":{"rule":"repeated","type":"uint32","id":8,"options":{"packed":true}},"character_sort":{"rule":"repeated","type":"uint32","id":9,"options":{"packed":true}},"hidden_characters":{"rule":"repeated","type":"uint32","id":10,"options":{"packed":true}},"other_character_sort":{"rule":"repeated","type":"uint32","id":11,"options":{"packed":true}}}},"Character":{"edition":"proto2","fields":{"charid":{"type":"uint32","id":1},"level":{"type":"uint32","id":2},"exp":{"type":"uint32","id":3},"views":{"rule":"repeated","type":".lq.ViewSlot","id":4},"skin":{"type":"uint32","id":5},"is_upgraded":{"type":"bool","id":6},"extra_emoji":{"rule":"repeated","type":"uint32","id":7,"options":{"packed":true}},"rewarded_level":{"rule":"repeated","type":"uint32","id":8,"options":{"packed":true}},"enabled_emoji":{"rule":"repeated","type":"uint32","id":9,"options":{"packed":true}}}},"ViewSlot":{"edition":"proto2","fields":{"slot":{"type":"uint32","id":1},"item_id":{"type":"uint32","id":2},"type":{"type":"uint32","id":3},"item_id_list":{"rule":"repeated","type":"uint32","id":4,"options":{"packed":true}}}},"ResAllcommonViews":{"edition":"proto2","fields":{"views":{"rule":"repeated","type":".lq.ResAllcommonViews.Views","id":1},"use":{"type":"uint32","id":2},"error":{"type":".lq.Error","id":3}},"nested":{"Views":{"fields":{"values":{"rule":"repeated","type":".lq.ViewSlot","id":1},"index":{"type":"uint32","id":2},"name":{"type":"string","id":3}}}}},"ReqJoinRoom":{"edition":"proto2","fields":{}},"ResJoinRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"Room":{"edition":"proto2","fields":{"owner_id":{"type":"uint32","id":2},"persons":{"rule":"repeated","type":".lq.PlayerGameView","id":5},"robot_count":{"type":"uint32","id":9},"seq":{"type":"uint32","id":11},"robots":{"rule":"repeated","type":".lq.PlayerGameView","id":13},"positions":{"rule":"repeated","type":"uint32","id":14,"options":{"packed":true}}}},"PlayerGameView":{"edition":"proto2","fields":{"account_id":{"type":"uint32","id":1},"avatar_id":{"type":"uint32","id":2},"title":{"type":"uint32","id":3},"character":{"type":".lq.Character","id":6},"avatar_frame":{"type":"uint32","id":8},"views":{"rule":"repeated","type":".lq.ViewSlot","id":10}}},"ResSelfRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"ReqCreateRoom":{"edition":"proto2","fields":{}},"ResCreateRoom":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"room":{"type":".lq.Room","id":2}}},"ReqGameRecord":{"edition":"proto2","fields":{}},"ResGameRecord":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"head":{"type":".lq.RecordGame","id":3}}},"RecordGame":{"edition":"proto2","fields":{"accounts":{"rule":"repeated","type":".lq.RecordGame.AccountInfo","id":11}},"nested":{"AccountInfo":{"fields":{"account_id":{"type":"uint32","id":1},"avatar_id":{"type":"uint32","id":4},"character":{"type":".lq.Character","id":5},"title":{"type":"uint32","id":6},"avatar_frame":{"type":"uint32","id":9},"views":{"rule":"repeated","type":".lq.ViewSlot","id":11}}}}},"ReqAccountInfo":{"edition":"proto2","fields":{}},"ResAccountInfo":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"account":{"type":".lq.Account","id":2}}},"ReqUseTitle":{"edition":"proto2","fields":{"title":{"type":"uint32","id":1}}},"ResCommon":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1}}},"ReqSetLoadingImage":{"edition":"proto2","fields":{"images":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}}}},"ReqChangeMainCharacter":{"edition":"proto2","fields":{"character_id":{"type":"uint32","id":1}}},"ReqChangeCharacterSkin":{"edition":"proto2","fields":{"character_id":{"type":"uint32","id":1},"skin":{"type":"uint32","id":2}}},"ReqUpdateCharacterSort":{"edition":"proto2","fields":{"sort":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}},"other_sort":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}},"hidden_characters":{"rule":"repeated","type":"uint32","id":3,"options":{"packed":true}}}},"ReqSetHiddenCharacter":{"edition":"proto2","fields":{"chara_list":{"rule":"repeated","type":"uint32","id":1,"options":{"packed":true}}}},"ResSetHiddenCharacter":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"hidden_characters":{"rule":"repeated","type":"uint32","id":2,"options":{"packed":true}}}},"ReqUseCommonView":{"edition":"proto2","fields":{"index":{"type":"uint32","id":3}}},"ReqSaveCommonViews":{"edition":"proto2","fields":{"views":{"rule":"repeated","type":".lq.ViewSlot","id":1},"save_index":{"type":"uint32","id":2},"is_use":{"type":"uint32","id":3},"name":{"type":"string","id":4}}},"ReqFinishedEnding":{"edition":"proto2","fields":{}},"ReqAuthGame":{"edition":"proto2","fields":{"account_id":{"type":"uint32","id":1}}},"ResAuthGame":{"edition":"proto2","fields":{"error":{"type":".lq.Error","id":1},"players":{"rule":"repeated","type":".lq.PlayerGameView","id":2},"seat_list":{"rule":"repeated","type":"uint32","id":3,"options":{"packed":true}}}},"ReqBroadcastInGame":{"edition":"proto2","fields":{"content":{"type":"string","id":1},"except_self":{"type":"bool","id":2}}},"NotifyAccountUpdate":{"edition":"proto2","fields":{"update":{"type":".lq.AccountUpdate","id":1}}},"AccountUpdate":{"edition":"proto2","fields":{"character":{"type":".lq.AccountUpdate.CharacterUpdate","id":2},"main_character":{"type":".lq.AccountUpdate.MainCharacterUpdate","id":18}},"nested":{"CharacterUpdate":{"fields":{"characters":{"rule":"repeated","type":".lq.Character","id":2}}},"MainCharacterUpdate":{"fields":{}}}},"NotifyRoomPlayerUpdate":{"edition":"proto2","fields":{"owner_id":{"type":"uint32","id":3},"robot_count":{"type":"uint32","id":4},"player_list":{"rule":"repeated","type":".lq.PlayerGameView","id":5},"seq":{"type":"uint32","id":6},"robots":{"rule":"repeated","type":".lq.PlayerGameView","id":7},"positions":{"rule":"repeated","type":"uint32","id":8,"options":{"packed":true}}}},"NotifyGameFinishRewardV2":{"edition":"proto2","fields":{"main_character":{"type":".lq.NotifyGameFinishRewardV2.MainCharacter","id":4}},"nested":{"MainCharacter":{"fields":{"level":{"type":"uint32","id":1},"exp":{"type":"uint32","id":2},"add":{"type":"uint32","id":3}}}}},"NotifyGameBroadcast":{"edition":"proto2","fields":{"seat":{"type":"uint32","id":1},"content":{"type":"string","id":2}}}}}}}, {"service":{"Lobby":{"login":{"request":"ReqLogin","response":"ResLogin"},"emailLogin":{"request":"ReqEmailLogin","response":"ResLogin"},"oauth2Login":{"request":"ReqOauth2Login","response":"ResLogin"},"fetchInfo":{"request":"ReqCommon","response":"ResFetchInfo"},"joinRoom":{"request":"ReqJoinRoom","response":"ResJoinRoom"},"fetchRoom":{"request":"ReqCommon","response":"ResSelfRoom"},"createRoom":{"request":"ReqCreateRoom","response":"ResCreateRoom"},"fetchGameRecord":{"request":"ReqGameRecord","response":"ResGameRecord"},"fetchAccountInfo":{"request":"ReqAccountInfo","response":"ResAccountInfo"},"useTitle":{"request":"ReqUseTitle","response":"ResCommon"},"setLoadingImage":{"request":"ReqSetLoadingImage","response":"ResCommon"},"changeMainCharacter":{"request":"ReqChangeMainCharacter","response":"ResCommon"},"changeCharacterSkin":{"request":"ReqChangeCharacterSkin","response":"ResCommon"},"updateCharacterSort":{"request":"ReqUpdateCharacterSort","response":"ResCommon"},"setHiddenCharacter":{"request":"ReqSetHiddenCharacter","response":"ResSetHiddenCharacter"},"useCommonView":{"request":"ReqUseCommonView","response":"ResCommon"},"saveCommonViews":{"request":"ReqSaveCommonViews","response":"ResCommon"},"addFinishedEnding":{"request":"ReqFinishedEnding","response":"ResCommon"},"leaveRoom":{"request":"ReqCommon","response":"ResCommon"}},"FastTest":{"authGame":{"request":"ReqAuthGame","response":"ResAuthGame"},"broadcastInGame":{"request":"ReqBroadcastInGame","response":"ResCommon"}}}});
   installCosmeticHook(window, api, cfg);
 })();

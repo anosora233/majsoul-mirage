@@ -11,11 +11,10 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
   const sockets = new Map();
   const MAX_PENDING = 4096, TIMEOUT = 120000, MAX_FRAME = 16 * 1024 * 1024;
   const api = {
-    version: '0.4.2', active: true, log: false,
+    version: '0.4.9', active: true, log: true, debug: false,
     onRequest: null, onResponse: null, onNotify: null,
     stats: { sockets: 0, requests: 0, responses: 0, notifications: 0,
-      modified: 0, synthetic: 0, unsupported: 0, errors: 0 },
-    recent: [],
+      modified: 0, blocked: 0, synthetic: 0, localNotifications: 0, unsupported: 0, errors: 0 },
     lookupType(name) { return root.lookupType(name.startsWith('.') ? name : 'lq.' + name); },
     createRequest(service, method, object = {}) {
       const pair = getTypes(service, method);
@@ -76,15 +75,42 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     return {kind,id:header===3?new DataView(b.buffer,b.byteOffset,b.byteLength).getUint16(1,true):null,
       wrapper:decode(wrapperType,b.subarray(header))};
   }
-  function remember(state, direction, service, method, id) {
-    api.recent.push({connection:state.id,direction,service,method,id});
-    if (api.recent.length > 100) api.recent.shift();
-    if (api.log) scope.console.info('[MajsoulWS]',direction,service ? service+'.'+method : method,id);
+  function metadata(state, direction, service, method, id) {
+    return {connection:state.id,direction,service,method,id,action:'pass'};
   }
-  function error(state, stage, exception) {
+  function capture(record, type, payload, phase = 'before') {
+    const name = '.lq.'+(record.service ? record.service+'.'+record.method : record.method);
+    if (api.debug !== true && !(typeof api.debug === 'string' && api.debug && name.includes(api.debug))) return;
+    const snapshot = {bytes:Uint8Array.from(payload)};
+    if (type) {
+      try { snapshot.message = type.toObject(decode(type,payload),{longs:String,bytes:String,enums:String}); }
+      catch (exception) { snapshot.error = exception.name; }
+    }
+    (record.content ||= {})[phase] = snapshot;
+  }
+  function dump(record) {
+    if (record.content) scope.console.info(format(record)+' — content',record.content);
+  }
+  function format(record, detail = '') {
+    const name = record.service ? record.service+'.'+record.method : record.method || '<unknown>';
+    const id = record.id == null ? '' : ' #'+record.id;
+    return '[MajsoulWS] '+record.action+' '+record.direction+' '+name
+      +' [ws:'+record.connection+id+']'+(detail ? ' — '+detail : '');
+  }
+  function report(record, action, detail = '') {
+    record.action = action;
+    if (detail) record.detail = detail;
+    if (api.log && (action !== 'pass' || api.log === 'all')) scope.console.info(format(record, detail));
+    dump(record);
+  }
+  function error(state, stage, exception, record) {
     api.stats.errors++;
-    // Do not log frames, login tokens, decoded account objects or user callbacks' messages.
-    scope.console.warn('[MajsoulWS]',stage,'failed; original message retained.',{connection:state.id,error:exception.name||'Error'});
+    // Exception text stays private; explicitly enabled debugging prints captured message snapshots.
+    record ||= {connection:state.id,direction:'frame',method:null,id:null};
+    record.action = 'error';
+    record.detail = stage+' ('+(exception.name || 'Error')+'); original retained';
+    scope.console.warn(format(record, record.detail));
+    dump(record);
   }
   function expire(state) {
     const now=Date.now();
@@ -105,23 +131,37 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     state.recognized=true;expire(state);
     const service=match[1],method=match[2],types=getTypes(service,method);
     const pending={service,method,types,created:Date.now()};
-    api.stats.requests++;remember(state,'request',service,method,parsed.id);
-    if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id};}
-    if(typeof api.onRequest!=='function')return{data,pending,id:parsed.id};
-    const message=decode(types.request,parsed.wrapper.data);
+    api.stats.requests++;
+    const record=metadata(state,'request',service,method,parsed.id);
+    capture(record,types?.request,parsed.wrapper.data);
+    if(!types){api.stats.unsupported++;return{data,pending,id:parsed.id,record};}
+    if(typeof api.onRequest!=='function')return{data,pending,id:parsed.id,record};
+    let message;
+    try { message=decode(types.request,parsed.wrapper.data); }
+    catch(exception){error(state,'request decode',exception,record);return{data,pending,id:parsed.id,record};}
     const context={socket:state.socket,connection:state.id,service,method,id:parsed.id,message};
     let action;
-    try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception);return{data,pending,id:parsed.id};}
+    try { action=call(api.onRequest,context); } catch(exception){error(state,'request hook',exception,record);return{data,pending,id:parsed.id,record};}
     try {
       if(action&&Object.prototype.hasOwnProperty.call(action,'respond')){
         if(!action.respond||typeof action.respond!=='object'||Array.isArray(action.respond))throw new TypeError('Local response must be an object');
         const response=types.response.fromObject(action.respond);
         const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
-        return{synthetic:packet(3,parsed.id,wrapper)};
+        capture(record,types.response,wrapper.data,'response');
+        const notifications=(Array.isArray(action.notify) ? action.notify : action.notify ? [action.notify] : []).map(notice=>{
+          const type=api.lookupType(notice.name);
+          const payload=encode(type,type.fromObject(notice.message || {}));
+          return{type,payload,data:packet(1,null,wrapperType.create({name:type.fullName,data:payload}))};
+        });
+        return{synthetic:packet(3,parsed.id,wrapper),notifications,record};
       }
-      if(action===true){parsed.wrapper.data=encode(types.request,message);return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true};}
-    } catch(exception) { error(state,'request hook encode',exception); }
-    return{data,pending,id:parsed.id};
+      if(action===true){
+        parsed.wrapper.data=encode(types.request,message);
+        capture(record,types.request,parsed.wrapper.data,'after');
+        return{data:packet(2,parsed.id,parsed.wrapper),pending,id:parsed.id,modified:true,record};
+      }
+    } catch(exception) { error(state,'request hook encode',exception,record); }
+    return{data,pending,id:parsed.id,record};
   }
   function incoming(state,event) {
     if(!state.active||!api.active||state.syntheticEvents.has(event))return;
@@ -129,32 +169,38 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
     try{parsed=parse(event.data);}catch(exception){if(state.recognized)error(state,'frame decode',exception);return;}
     if(!parsed)return;
     expire(state);
-    let type,context,handler;
+    let type,context,handler,record;
     if(parsed.kind===3){
       const entry=state.pending.get(parsed.id);if(!entry)return;
       state.pending.delete(parsed.id);api.stats.responses++;
-      remember(state,'response',entry.service,entry.method,parsed.id);
-      if(!entry.types){api.stats.unsupported++;return;}
+      record=metadata(state,'response',entry.service,entry.method,parsed.id);
+      if(!entry.types){api.stats.unsupported++;capture(record,null,parsed.wrapper.data);report(record,'pass');return;}
       type=entry.types.response;handler=api.onResponse;
       context={socket:state.socket,connection:state.id,service:entry.service,method:entry.method,id:parsed.id};
     }else if(parsed.kind===1){
       if(!/^\.lq\.[A-Za-z_][\w.]*$/.test(parsed.wrapper.name))return;
       const name=parsed.wrapper.name.slice(4);
-      try{type=root.lookupType('lq.'+name);}catch{api.stats.unsupported++;return;}
+      record=metadata(state,'notify',null,name,null);
+      try{type=root.lookupType('lq.'+name);}catch{
+        api.stats.unsupported++;capture(record,null,parsed.wrapper.data);report(record,'pass');return;
+      }
       state.recognized=true;api.stats.notifications++;
-      remember(state,'notify',null,name,null);handler=api.onNotify;
+      handler=api.onNotify;
       context={socket:state.socket,connection:state.id,name};
     }else return;
-    if(typeof handler!=='function')return;
+    capture(record,type,parsed.wrapper.data);
+    if(typeof handler!=='function'){report(record,'pass');return;}
     try{
       context.message=decode(type,parsed.wrapper.data);
-      if(call(handler,context)!==true)return;
+      if(call(handler,context)!==true){report(record,'pass');return;}
       parsed.wrapper.data=encode(type,context.message);
+      capture(record,type,parsed.wrapper.data,'after');
       const result=packet(parsed.kind,parsed.id,parsed.wrapper);
       // Shadow the native event's data getter: retain target, ordering, isTrusted and listeners.
       Object.defineProperty(event,'data',{configurable:true,value:result.buffer});
       api.stats.modified++;
-    }catch(exception){error(state,'incoming hook',exception);}
+      report(record,'modified');
+    }catch(exception){error(state,'incoming hook',exception,record);}
   }
   function cleanup(state){
     state.active=false;state.pending.clear();
@@ -179,18 +225,29 @@ function installWebSocketHook(scope, protobuf, schema, methodMap) {
       try{result=outgoing(state,data);}catch(exception){error(state,'request decode/encode',exception);return Reflect.apply(nativeSend,this,arguments);}
       if(result.synthetic){
         if(socket.readyState!==NativeSocket.OPEN)return Reflect.apply(nativeSend,this,arguments);
-        api.stats.synthetic++;
+        api.stats.blocked++;api.stats.synthetic++;
+        report(result.record,'blocked',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
         // Unity records its waiting callback after send() returns; defer the local response.
         scope.queueMicrotask(()=>{
           if(!state.active||!api.active||socket.readyState!==NativeSocket.OPEN)return;
-          const event=new scope.MessageEvent('message',{data:result.synthetic.buffer,origin:new URL(socket.url).origin});
-          state.syntheticEvents.add(event);socket.dispatchEvent(event);
+          for (const item of [{data:result.synthetic},...result.notifications]) {
+            if (!state.active || !api.active || socket.readyState!==NativeSocket.OPEN) break;
+            const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(socket.url).origin});
+            state.syntheticEvents.add(event);socket.dispatchEvent(event);
+            if (item.type) {
+              api.stats.localNotifications++;
+              const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
+              capture(record,item.type,item.payload);
+              report(record,'local','synthetic notification');
+            }
+          }
         });
         return;
       }
       const returned=Reflect.apply(nativeSend,this,result.modified?[result.data]:arguments);
       if(result.pending)state.pending.set(result.id,result.pending);
       if(result.modified)api.stats.modified++;
+      if(result.record && result.record.action!=='error')report(result.record,result.modified?'modified':'pass');
       return returned;
     };
     socket.send=state.send;sockets.set(socket,state);

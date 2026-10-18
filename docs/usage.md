@@ -1,4 +1,4 @@
-# WebSocket Cosmetics 0.4.2
+# WebSocket Cosmetics 0.4.9
 
 安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
 保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
@@ -10,9 +10,10 @@
 - 登录、账号信息：替换本人的头像、头像框、称号、加载图等已有字段。
 - fetchInfo：提供角色、皮肤、表情、称号、结局奖励、装扮物品和保存的展示方案。
 - 选择角色、皮肤、称号、加载图、角色排序、隐藏角色、展示方案：保存到本地并返回本地成功响应。
+- 修改角色皮肤后派发 `NotifyAccountUpdate`；在房间中同时派发 `NotifyRoomPlayerUpdate`，刷新本机房间界面。
 - 房间、牌谱、对局：应用本人装扮，将其他玩家的已有角色对象显示为满羁绊。
 - 账号更新通知：移除服务器角色和主角色更新；房间和对局奖励通知按原逻辑修改。
-- emo > 9 的对局广播在本地返回成功，其余广播正常发送。
+- `.lq.FastTest.broadcastInGame`：包含整数 `emo_id` 的表情请求在本地假返回，并注入 `NotifyGameBroadcast`，保留原始 content，不发往服务器；其他广播原样发送。
 
 服务器返回错误时保持错误响应；不重复添加背包已有物品；角色没有额外表情时使用空数组。
 本地响应通过 microtask 延迟投递，让游戏先登记等待回调。装扮选择留在本地，
@@ -20,23 +21,50 @@
 
 ## 状态与日志
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.2` 和 `[MajsoulWS] cosmetics.ready`。
-默认不打印每条消息，也不记录 token 或解码后的账号对象。
+安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.9` 和 `[MajsoulWS] cosmetics.ready`。
+默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
+
+```text
+[MajsoulWS] modified response Lobby.fetchInfo [ws:1 #8]
+[MajsoulWS] blocked request Lobby.useTitle [ws:1 #9] — local response queued
+[MajsoulWS] modified notify NotifyAccountUpdate [ws:1]
+[MajsoulWS] local notify NotifyGameBroadcast [ws:1] — synthetic notification
+```
+
+`modified` 表示请求、响应或通知已重新编码并交给游戏或原生发送；
+`blocked` 表示请求未发往服务器，已安排本地响应。
+表情通知使用该连接 authGame 的本人座位号，先派发本地响应，再派发通知，仅自己可见。
+若座位未知，只返回本地响应并提示 `emoji.skipped — seat unavailable`；重新进入对局后会重新记录座位。
+解析或修改失败显示 `error`，标明消息、失败阶段和异常类型，原消息继续透传。
+默认日志只显示消息元信息；开启内容调试后，匹配消息的解码内容会直接输出到 console。
 
 ```js
 majsoulWS.stats
-majsoulWS.recent
-majsoulWS.recent.filter(record => record.method === 'fetchInfo')
-majsoulWS.log = true // 打开消息名称日志
+majsoulWS.log = true  // 默认：只打印修改和拦截操作
+majsoulWS.log = 'all' // 同时打印普通透传消息，标记为 pass
+majsoulWS.log = false // 关闭操作与透传日志；错误警告保留
+majsoulWS.debug = 'FastTest.broadcastInGame' // 按名称片段筛选内容
+majsoulWS.debug = '.lq.Lobby.fetchInfo'     // 也可使用完整消息名称
+majsoulWS.debug = true                    // 输出全部可识别消息的内容
+majsoulWS.debug = false                   // 停止内容输出（默认）
 majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
 ```
 
-`stats.modified` 是被修改的消息数，`synthetic` 是本地响应数。
-`recent` 保留 100 条 `{connection, direction, service, method, id}` 元信息。
+`stats.modified` 是被修改的消息数，`blocked` 是拦截的请求数，`synthetic` 是生成的本地响应数。
+`localNotifications` 是实际派发的本地通知数；`debug = 'NotifyGameBroadcast'` 可以查看构造的通知内容。
+`debug = 'NotifyRoomPlayerUpdate'` 可查看房间更新内容，`debug = 'NotifyAccountUpdate'` 可查看换肤的角色更新。
+内容调试独立于 `log`。设置后再次操作游戏，即可展开对应的 `— content` console 记录：
+`before` 是原消息，`after` 是修改后的消息，`response` 是拦截请求的本地响应。
+每个快照包含 `message`（已知字段的普通对象）和 `bytes`（完整业务 payload 的字节副本），
+不会随着后续修改变化。协议定义经过裁剪，未定义字段或消息只能查看原始字节。
+
+不保存消息历史或内容队列，也不提供 `recent`；所有内容直接交给 console。
+仅为换肤刷新保留当前房间状态；房间响应与玩家变化通知都会更新它，离房或本人被移出后清除。
+关闭内容调试后不再生成快照。请求编号匹配仍需保留少量元信息，不包含消息正文。
 响应按每条连接自己的请求编号匹配；每条连接最多保留 4096 个等待项，
 两分钟后在下一次处理协议帧时清除。
 
-脚本约 39 KB，内置裁剪后的业务定义和 cfg；通过油猴 `@require` 加载固定版本
+脚本约 45 KB，内置裁剪后的业务定义和 cfg；通过油猴 `@require` 加载固定版本
 protobuf.js light 8.8.1，这是唯一外部运行依赖。不需要单独加载 Long，
 当前选择的字段不含 64 位整数，其他字段保留原始字节。
 没有完整协议表、Unity 解析器或 Lua 运行时。protobuf.js 负责编解码，未选中的字段作为原始未知字段保留。

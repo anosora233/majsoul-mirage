@@ -1,6 +1,6 @@
 # Majsoul WebSocket Cosmetics
 
-通过原生 WebSocket 修改雀魂网页端的本地装扮显示。当前版本 **0.4.2**。
+通过原生 WebSocket 修改雀魂网页端的本地装扮显示。当前版本 **0.4.9**。
 
 ## 安装
 
@@ -8,11 +8,14 @@
 停用之前的 prod、Lua 和 WebSocket 脚本，保存后刷新游戏。
 完整保留脚本头，特别是 `@run-at document-start`、`@sandbox raw`、`@grant none` 和 `@require`。
 
-脚本约 39 KB，唯一外部运行依赖是固定版本 protobuf.js light 8.8.1，由油猴加载。
+脚本约 45 KB，唯一外部运行依赖是固定版本 protobuf.js light 8.8.1，由油猴加载。
 cfg 和必要的消息定义内置；无需 Python、Node.js、Long 或 Lua 浏览器运行时。
 保留旧 `vip.*` 本地设置，修改不改变服务器库存和其他玩家看到的装扮。
 
 支持角色、皮肤、表情、称号、加载图、展示方案，以及房间、牌谱、对局和相关通知。
+换肤会派发本地账号更新；在房间中还会派发玩家更新，刷新本人立绘和头像。
+默认打印消息修改和请求拦截提示，可切换为全部消息日志或关闭操作日志。
+`majsoulWS.debug = 'FastTest.broadcastInGame'` 可直接在 console 查看后续匹配消息的内容，无消息历史队列。
 日志与具体行为见 [使用说明](docs/usage.md)。
 
 ## 目录

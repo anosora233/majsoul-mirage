@@ -7,17 +7,17 @@ function cosmeticProtocol(protobuf, schema, config) {
     Account:'account_id avatar_id avatar_frame title loading_image',
     PlayerGameView:'account_id avatar_id avatar_frame title character views',
     'RecordGame.AccountInfo':'account_id avatar_id avatar_frame title character views',
-    Room:'persons', RecordGame:'accounts', Bag:'items',
+    Room:'persons owner_id robot_count seq robots positions', RecordGame:'accounts', Bag:'items',
     ResGameRecord:'error head', ResAccountInfo:'error account',
-    ResAuthGame:'error players', NotifyRoomPlayerUpdate:'player_list',
+    ResAuthGame:'error players seat_list',
     NotifyGameFinishRewardV2:'main_character',
     AccountUpdate:'character main_character',
-    'AccountUpdate.CharacterUpdate':'', 'AccountUpdate.MainCharacterUpdate':'',
-    ReqAuthGame:'', ReqFinishedEnding:''
+    'AccountUpdate.CharacterUpdate':'characters', 'AccountUpdate.MainCharacterUpdate':'',
+    ReqAuthGame:'account_id', ReqFinishedEnding:''
   };
   const lobby = 'login emailLogin oauth2Login fetchInfo joinRoom fetchRoom createRoom fetchGameRecord fetchAccountInfo '
     + 'useTitle setLoadingImage changeMainCharacter changeCharacterSkin updateCharacterSort setHiddenCharacter '
-    + 'useCommonView saveCommonViews addFinishedEnding';
+    + 'useCommonView saveCommonViews addFinishedEnding leaveRoom';
   const methods = {Lobby:lobby.split(' '), FastTest:['authGame', 'broadcastInGame']};
   const result = new protobuf.Root(), methodMap = {service:{}};
   function include(name, selection) {
@@ -48,7 +48,7 @@ function cosmeticProtocol(protobuf, schema, config) {
       methodMap.service[service][method] = pair;
     }
   }
-  for (const name of ['NotifyAccountUpdate', 'NotifyRoomPlayerUpdate', 'NotifyGameFinishRewardV2']) include('lq.' + name);
+  for (const name of ['NotifyAccountUpdate', 'NotifyRoomPlayerUpdate', 'NotifyGameFinishRewardV2', 'NotifyGameBroadcast']) include('lq.' + name);
   return {schema:result.resolveAll().toJSON(), methodMap};
 }
 
