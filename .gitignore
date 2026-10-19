@@ -7,6 +7,18 @@ __pycache__/
 *.tmp
 *.download
 /data/*.json
+/*.user.js
+
+# Local credentials and browser debugging exports.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+*.har
 
 # Retired experiments remain local; the maintained project does not depend on them.
 /archive/

@@ -38,8 +38,8 @@ class WebSocket { send() {} }
 const browser = {WebSocket, console: {info() {}}};
 const context = vm.createContext({window: browser, TextDecoder});
 vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
-vm.runInContext(fs.readFileSync('majsoul-websocket-hook.user.js', 'utf8'), context);
-assert.equal(browser.majsoulWS.cfg, browser.cfg);
-assert.equal(browser.majsoulWS.version, require('../package.json').version);
+vm.runInContext(fs.readFileSync('majsoul-mirage.user.js', 'utf8'), context);
+assert.equal(browser.majsoulMirage.cfg, browser.cfg);
+assert.equal(browser.majsoulMirage.version, require('../package.json').version);
 assert.equal(JSON.stringify(browser.cfg), JSON.stringify(cfg));
 console.log('PASS: projected cfg fields, old access patterns, existing tables preserved, generated userscript');

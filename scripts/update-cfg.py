@@ -107,4 +107,4 @@ for command in [
     ['node', str(ROOT / 'tests/test-cosmetic-hook.cjs')],
 ]:
     subprocess.run(command, cwd=ROOT, check=True)
-print('Updated: majsoul-websocket-hook.user.js')
+print('Updated: majsoul-mirage.user.js')

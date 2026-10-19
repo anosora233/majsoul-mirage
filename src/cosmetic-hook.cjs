@@ -1,4 +1,4 @@
-// Local cosmetic state, compatible with prod.js storage keys.
+// Local cosmetic state, preserving existing vip.* storage keys.
 function installCosmeticHook(scope, api, cfg) {
   const storage = scope.localStorage;
   const keys = {skin:'vip.skin', title:'vip.title', loading:'vip.loading', account:'vip.account',
@@ -109,7 +109,7 @@ function installCosmeticHook(scope, api, cfg) {
       context.local = true;
       const seat = games.get(socket)?.seat ?? -1;
       if (seat < 0) {
-        scope.console.warn('[MajsoulWS] emoji.skipped — seat unavailable');
+        scope.console.warn('[MajsoulMirage] emoji.skipped — seat unavailable');
         return {respond:{}};
       }
       return {respond:{}, notify:{name:'NotifyGameBroadcast', message:{seat, content:message.content}}};
@@ -205,6 +205,6 @@ function installCosmeticHook(scope, api, cfg) {
     }
   };
   api.cfg = cfg;
-  scope.console.info('[MajsoulWS] cosmetics.ready');
+  scope.console.info('[MajsoulMirage] cosmetics.ready');
 }
 module.exports = {installCosmeticHook};

@@ -8,7 +8,7 @@
 - `scripts/`: build tooling, resource downloads, and configuration/protocol exporters.
 - `tests/`: JavaScript regressions and original game Lua decoder validation.
 - `docs/`: usage, maintenance, and validation notes.
-- `majsoul-websocket-hook.user.js`: tracked, installable build output. Edit sources and rebuild; never patch it directly.
+- `majsoul-mirage.user.js`: untracked, installable build output. Generate with `npm run build`; never patch it directly.
 
 Generated `data/*.json`, extracted Lua, `.cache/`, and dependencies stay untracked.
 
@@ -31,9 +31,11 @@ Install the generated script in Tampermonkey and refresh the game for manual che
 
 ## Coding Style & Naming Conventions
 
+Write documentation under `docs/` and the data directory guide in English. Only the root README has English (`README.md`), Japanese (`README.ja.md`), and Simplified Chinese (`README.zh-CN.md`) editions; keep their content and links synchronized.
+
 Use CommonJS `.cjs`, two-space JavaScript indentation, semicolons, and descriptive camelCase names. Follow surrounding Python style with four-space indentation. Keep runtime code readable and logs concise and English. Preserve protobuf field names and existing `vip.*` storage keys.
 
-No formatter or linter is configured. Check syntax with `node --check majsoul-websocket-hook.user.js` and whitespace with `git diff --check`. Release versions come from `package.json`; rebuild after changing them.
+No formatter or linter is configured. Check syntax with `node --check majsoul-mirage.user.js` and whitespace with `git diff --check`. Release versions come from `package.json`; rebuild after changing them.
 
 ## Testing Guidelines
 

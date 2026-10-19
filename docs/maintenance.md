@@ -1,78 +1,72 @@
-# 维护
+# Maintenance
 
-## 修改与发布
+## Editing and releases
 
-业务逻辑在 `src/cosmetic-hook.cjs`，传输层在 `src/websocket-core.cjs`，
-配置适配在 `src/cfg-snapshot.cjs`。修改源码后运行 `npm run build`，不要直接编辑生成文件。
-发布时修改 `package.json` 的版本，再构建、测试并保留最终产物；脚本元数据和 API 版本由构建统一注入。
+Business logic lives in `src/cosmetic-hook.cjs`, transport in `src/websocket-core.cjs`, configuration adaptation in `src/cfg-snapshot.cjs`, and compact protocol restoration in `src/protocol.cjs`. Edit sources and run `npm run build`; never patch the generated userscript directly.
 
-`scripts/build-websocket-userscript.cjs` 生成正式用户脚本。
-cfg 数字列表以差值和 base36 存储；应用代码保留变量名、注释和缩进。
-协议字段以 `[名称, 编号, 标量类型或消息索引, repeated 编码]` 存储，方法映射仅保存消息索引。
-`src/protocol.cjs` 在启动时还原 protobuf.js 定义；测试逐项比较还原前后的协议及方法映射。
-protobuf.js 通过固定版本 `@require` 加载；更换依赖版本时同步修改元数据、开发依赖和测试中的 URL 断言。
+Update the version in `package.json` and keep `package-lock.json` consistent. The build injects the version into userscript metadata and the API. Build, test, and retain the final artifact locally; it is not tracked in Git.
 
-请求 Hook 返回 `{respond:{}}` 时阻止原请求，并派发空的本地响应结束等待。
-可附带 `notify:{name, message}` 或通知数组，在响应后向同一连接依次派发本地通知，不再次经过修改 Hook。
-表情按 `content.emo_id` 识别，不换算 ID，不使用旧的 emo 阈值。账号和座位仅在按连接隔离的 WeakMap 中保存。
-随机角色的启用状态及 `{character_id, skin_id}` 候选池保存在 `vip.char.random`；
-随机设置、读取均返回本地响应。成功进房抽选一次，房间刷新沿用；对局认证按账号与 `game_uuid` 保留最近一局选择。
-设置请求不派发随机账号通知；成功进房经响应 Hook 的 `context.notify` 派发，匹配对局经 `NotifyMatchGameStart` 的通知 Hook 派发。
-匹配通知按账号和 `game_uuid` 去重；房间开局通知绑定已有选择。认证只复用该局已绑定的角色，没有绑定时使用固定角色，不补选或通知。
-真实入站消息附带的通知通过下一任务（`setTimeout(..., 0)`）投递，避免在原生事件监听器之间提前触发；
-本地请求的模拟响应与通知仍使用 microtask。合成事件不再次进入业务 Hook。
-换肤按顺序派发账号角色更新及当前房间玩家更新。房间响应初始化当前状态，玩家变化通知替换它；
-离房、本人不在玩家列表或账号切换时清除。复用已解码的房间消息保留未知字段，不复制 Room 的未知字段到另一种消息类型。
+`scripts/build-websocket-userscript.cjs` compresses numeric configuration using deltas and base36. Application names, comments, and indentation remain readable. Protocol fields use `[name, id, scalar type or message index, repeated packing]` tuples; service mappings contain message indices. Tests compare restored definitions and method mappings against their original sparse forms.
 
-## 更新 cfg
+protobuf.js is loaded through a pinned `@require`. When updating it, synchronize the userscript metadata, development dependency, lockfile, and URL assertions.
 
-```powershell
+## Hook behavior
+
+A request hook returning `{respond:{}}` intercepts the original request and queues an empty local response. It may attach `notify:{name, message}` or a notification array, delivered in order after the response on the same socket. Synthetic events bypass incoming business hooks.
+
+Emoji requests are identified by integer `content.emo_id`, without ID conversion or legacy numeric thresholds. Account and seat state are isolated per socket in a WeakMap.
+
+Random settings and `{character_id, skin_id}` pools are stored in `vip.char.random`; reads and writes receive local responses. Successful room entry draws once. `NotifyMatchGameStart` draws and emits an account update; `NotifyRoomGameStart` only binds the existing choice to the game UUID. Match starts are deduplicated by account and UUID. Authentication applies bound choices or the fixed character, never drawing or notifying.
+
+Manual character changes override the current random choice. Manual skin changes update the selected skin without changing the saved pool. Room responses initialize the cache; membership changes replace it. Leaving, self removal, or account changes clear it. Reuse typed room messages to preserve unknown fields; do not copy unknown Room fields into a different notification type.
+
+Incoming hooks may attach `context.notify`. Their notifications run in the next task (`setTimeout(..., 0)`), after native event listeners. Local request responses and notifications retain microtask delivery. Preserve known-local failure blocking; ordinary failures pass the original frame through.
+
+## Updating configuration
+
+```sh
 npm ci
 python -m pip install -r requirements.txt
 python scripts/update-cfg.py
 ```
 
-更新器下载最新资源索引，按逻辑路径发现配置包，缓存到 `.cache/bundles/`，
-使用当前资源中的 ExcelTool、CONST、Params 离线解析，更新 `data/cfg-resources.json`
-和 `data/cfg-snapshot.json`，重建脚本并测试。
-默认资源目录是 `https://game.maj-soul.com/assetbundles/DXT/`，可用 `--base-url URL` 替换。
-`--offline` 使用本地缓存，缺少资源时明确报错。
+The updater downloads the resource index, locates assets by logical path, caches bundles in `.cache/bundles/`, and executes the current ExcelTool, CONST, and Params helpers offline. It updates `data/cfg-resources.json` and `data/cfg-snapshot.json`, rebuilds, and tests.
 
-只需重导出已有资源时运行 `python scripts/export-cfg-snapshot.py`。
-Python、UnityPy 和 Lua 仅用于离线构建，不进入用户脚本。
+The default source is `https://game.maj-soul.com/assetbundles/DXT/`; use `--base-url URL` to override it. `--offline` uses existing caches and fails if required resources are missing. Treat resource Lua as executable code and only use trusted inputs.
 
-## 更新消息定义
+To re-export configuration from cached assets only:
 
-`data/game-protocol.json` 是从原始 Lua 描述符导出的完整构建输入；
-`data/proto-config.json` 是服务方法与消息类型的映射。
-构建时，`scripts/cosmetic-protocol.cjs` 仅选择 prod.js 逻辑需要的类型和字段。
+```sh
+python scripts/export-cfg-snapshot.py
+```
 
-已有 Lua 描述符可重新导出：
+Python, UnityPy, and Lua are offline tooling, not browser dependencies.
 
-```powershell
+## Updating protocol definitions
+
+`data/game-protocol.json` is the full build input exported from original Lua descriptors; `data/proto-config.json` maps service methods to request/response types. `scripts/cosmetic-protocol.cjs` selects only runtime-required types and fields.
+
+To export existing descriptor fixtures:
+
+```sh
 python scripts/export-game-protocol.py
 npm run build
 npm test
 npm run test:lua
 ```
 
-该命令读取 `.cache/lua/*_pb.lua`，只导出已有缓存。需要从当前游戏资源完整更新时运行：
+To download and extract all required configuration, protocol, and Lua decoder fixtures:
 
-```powershell
+```sh
 npm run resources:prepare
 ```
 
-它会按资源索引定位协议描述、Lua 解码器和方法映射，下载并提取，再生成协议与 cfg。
-`python scripts/update-cfg.py --offline --protocol` 可使用本地包完整重建。
-更新 cfg 本身不会自动更新消息协议。
+Use `python scripts/update-cfg.py --offline --protocol` to regenerate from cached bundles. A configuration-only update does not refresh protocol definitions.
 
-重复数字字段必须以 packed 方式输出。当前游戏 Lua 解码器会拒绝某些合法的 unpacked
-编码；不要将导出器恢复为统一的 `packed:false`。不能只用 protobuf.js 回读验证兼容性，
-需要运行原始 Lua 解码器回归。
+Numeric repeated fields must use packed encoding: the game Lua decoder rejects some otherwise valid unpacked payloads. Do not restore uniform `packed:false`. protobuf.js roundtrips alone are insufficient; run the original Lua decoder regression after encoding changes.
 
-## 中间数据
+## Generated files and privacy
 
-`data/*.json` 和 `.cache/lua/` 均由脚本生成，不受版本管理；首次构建运行
-`npm run resources:prepare`。最终安装脚本保留在 Git 中。
-资源包是可重新下载的缓存，依赖通过 `package-lock.json` 和 `requirements.txt` 安装。
-新日志或真实消息样本应留在 `.cache/`，不要写入受跟踪的测试夹具。
+`data/*.json`, `.cache/lua/`, and the root `.user.js` artifact are generated and untracked. Prepare resources before the first build. Install dependencies from `package-lock.json` and `requirements.txt`.
+
+Keep local diagnostics in `.cache/`. Never commit credentials, raw account/session traffic, or real capture files as test fixtures. Use synthetic tokens and IDs in tests, and redact debug output before sharing it.

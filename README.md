@@ -1,40 +1,43 @@
-# Majsoul WebSocket Cosmetics
+# 🀄 雀幻 · Majsoul Mirage
 
-通过原生 WebSocket 修改雀魂网页端的本地装扮显示。当前版本 **0.5.1**。
+![Version](https://img.shields.io/badge/version-0.5.1-6366f1?style=flat-square)
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
+![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Tampermonkey](https://img.shields.io/badge/Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white)
 
-## 安装
+**English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
-用 Tampermonkey 安装根目录的 [majsoul-websocket-hook.user.js](majsoul-websocket-hook.user.js)，
-停用之前的 prod、Lua 和 WebSocket 脚本，保存后刷新游戏。
-完整保留脚本头，特别是 `@run-at document-start`、`@sandbox raw`、`@grant none` 和 `@require`。
+A Tampermonkey userscript for local cosmetic customization in the Majsoul web client. Current version: **0.5.1**.
 
-脚本约 45 KB，唯一外部运行依赖是固定版本 protobuf.js light 8.8.1，由油猴加载。
-cfg 和必要的消息定义内置；无需 Python、Node.js、Long 或 Lua 浏览器运行时。
-保留旧 `vip.*` 本地设置，修改不改变服务器库存和其他玩家看到的装扮。
+The script intercepts native WebSocket messages, decodes selected protobuf fields, and applies local appearance overrides. Changes do not grant server-side ownership or change what other players see. Supported site patterns:
 
-支持角色、皮肤、表情、称号、加载图、展示方案，以及房间、牌谱、对局和相关通知。
-换肤会派发本地账号更新；在房间中还会派发玩家更新，刷新本人立绘和头像。
-默认打印消息修改和请求拦截提示，可切换为全部消息日志或关闭操作日志。
-`majsoulWS.debug = 'FastTest.broadcastInGame'` 可直接在 console 查看后续匹配消息的内容，无消息历史队列。
-日志与具体行为见 [使用说明](docs/usage.md)。
+- `https://mahjongsoul.game.yo-star.com/*`
+- `https://majsoul.union-game.com/*`
+- `https://game.mahjongsoul.com/*`
+- `https://game.maj-soul.com/1/*`
 
-## 目录
+## ⚠️ Disclaimer
 
-| 路径 | 内容 |
-| --- | --- |
-| `majsoul-websocket-hook.user.js` | 已生成、可直接安装的最终产物 |
-| `src/` | WebSocket 传输、装扮逻辑、cfg 适配 |
-| `scripts/` | 构建、资源更新、cfg 和协议导出 |
-| `data/` | 脚本生成的协议、配置快照和资源来源，不纳入 Git |
-| `tests/` | 消息修改、原生传输和游戏 Lua 解码器回归 |
-| `docs/` | 使用、维护与验证说明 |
-| `.cache/` | 下载的资源包和本机依赖，不纳入 Git |
+**Use at your own risk. Using this script may result in account restrictions, temporary suspension, or permanent bans.**
 
-## 构建与测试
+- Local-only visual changes do not guarantee that the script is permitted, undetectable, or safe from account penalties.
+- You are responsible for checking and complying with the game’s applicable rules and terms before use. Do not use the script if you cannot accept the risk of losing access to your account.
+- The project is provided as-is, without guarantees of safety, availability, or compatibility. To the extent permitted by applicable law, its authors and contributors accept no liability for account penalties, loss of data or purchased content, or other losses arising from use. Account recovery and compensation are not provided.
+- This is an unofficial project with no affiliation, authorization, or endorsement from the game operator.
 
-首次构建需要 Node.js 20+、Python 3.10+，先从游戏资源生成配置、协议和测试夹具：
+## ✨ Features
 
-```powershell
+- Local characters, skins, emoji, titles, loading images, and cosmetic view presets.
+- Appearance overrides for rooms, matches, account information, and replays.
+- Local random character/skin pools: select on successful room entry or `NotifyMatchGameStart`; bind room selections through `NotifyRoomGameStart`.
+- Manual character and skin changes override the current selection without rewriting the random pool. Authentication never draws a new selection.
+- Concise English logs and optional copyable message objects, with no message history queue.
+
+## 🛠️ Build
+
+Requirements: Node.js 20+, Python 3.10+, and network access for initial dependencies and game resources.
+
+```sh
 npm ci
 python -m pip install -r requirements.txt
 npm run resources:prepare
@@ -43,18 +46,52 @@ npm test
 npm run test:lua
 ```
 
-生成过资源后，日常修改只需 `npm run build` 和 `npm test`。只更新 cfg：
+The build produces `majsoul-mirage.user.js` in the repository root. This final artifact, generated JSON, extracted Lua, and caches are intentionally untracked. Python and Lua are build/test dependencies only. The browser's sole external runtime dependency is pinned protobuf.js light 8.8.1, loaded through Tampermonkey `@require`.
 
-```powershell
+## 🚀 Install
+
+1. Install the generated `.user.js` file in Tampermonkey.
+2. Disable other cosmetic hook scripts, save, and refresh the game.
+3. Preserve the complete header, especially `@run-at document-start`, `@sandbox raw`, `@grant none`, and `@require`.
+
+Existing `vip.*` local settings are retained. Reinstall the generated file after rebuilding.
+
+## 🔍 Debugging
+
+Run in the game page console:
+
+The console API is `majsoulMirage`.
+
+```js
+majsoulMirage.debug = 'NotifyAccountUpdate'; // Filter by message-name fragment
+majsoulMirage.debug = true;                 // Inspect all recognized messages
+majsoulMirage.debug = false;                // Default: no payload output
+majsoulMirage.log = 'all';                  // Include ordinary passthrough logs
+majsoulMirage.readOnly = true;              // Decode without applying business hooks
+majsoulMirage.readOnly = false;             // Resume modifications
+```
+
+Debug objects include message metadata and before/after contents; intercepted requests include local responses and notifications. Unknown messages expose raw bytes. Logs may contain sensitive account or session data: redact them before sharing. Refresh when switching to read-only mode after local room sequence changes.
+
+## 🔧 Maintenance
+
+```sh
 npm run cfg:update
+python scripts/update-cfg.py --offline --protocol
 ```
 
-更新后重新安装生成的用户脚本。离线更新：
+The first command updates configuration; the second regenerates resources from existing caches. Exporters execute Lua from game resources; only use trusted inputs. There is no development server.
 
-```powershell
-python scripts/update-cfg.py --offline
-```
+| Path | Purpose |
+| --- | --- |
+| `src/` | WebSocket transport, cosmetic hooks, configuration and protocol adapters |
+| `scripts/` | Resource extraction, protocol export, and build tools |
+| `tests/` | JavaScript regressions and original game Lua decoder checks |
+| `data/` | Generated build inputs and a directory guide |
+| `docs/` | Detailed usage, maintenance, and validation notes in English |
 
-依赖安装在当前 Python 环境，也兼容本机已有的 `.cache/python-libs/`。
-可重建的 JSON 和 Lua 提取结果不纳入 Git；最终安装脚本继续保留。
-资源与协议的维护流程见 [维护说明](docs/maintenance.md)，已验证范围见 [验证记录](docs/validation.md)。
+See [usage](docs/usage.md), [maintenance](docs/maintenance.md), [validation](docs/validation.md), and [contributor guidelines](AGENTS.md). Automated validation does not establish compatibility with every future game update or replace actual game UI testing. This project is not affiliated with Majsoul.
+
+## 🤝 Acknowledgments
+
+This project primarily references [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm), particularly its approach to message hooks and local cosmetic behavior. Thanks to its author and contributors. This acknowledgment does not imply affiliation or endorsement.

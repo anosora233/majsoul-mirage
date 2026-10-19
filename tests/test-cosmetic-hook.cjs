@@ -36,13 +36,19 @@ async function test() {
   const browser = {WebSocket:Socket, MessageEvent, queueMicrotask, setTimeout,
     localStorage:{getItem:key => saved.get(key) ?? null, setItem:(key, value) => saved.set(key, value)},
     console:{info(...args) { logs.push(args.join(' ')); }, warn(...args) { warnings.push(args); }}};
-  const generated = fs.readFileSync('majsoul-websocket-hook.user.js', 'utf8');
-  assert(Buffer.byteLength(generated) < 46000, 'Keep compact protocol data and external protobuf.js');
+  const generated = fs.readFileSync('majsoul-mirage.user.js', 'utf8');
+  assert.deepEqual(Array.from(generated.matchAll(/^\/\/ @match\s+(\S+)$/gm), match => match[1]), [
+    'https://mahjongsoul.game.yo-star.com/*',
+    'https://majsoul.union-game.com/*',
+    'https://game.mahjongsoul.com/*',
+    'https://game.maj-soul.com/1/*'
+  ]);
+  assert(Buffer.byteLength(generated) < 47000, 'Keep compact protocol data and external protobuf.js');
   assert(generated.includes('// @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js'));
   const context = vm.createContext({window:browser, TextDecoder, TextEncoder, URL, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
   vm.runInContext(generated, context);
-  const api = browser.majsoulWS, cfg = browser.cfg;
+  const api = browser.majsoulMirage, cfg = browser.cfg;
   assert.equal(api.log, true);
   assert.equal(api.debug, false);
   assert(!('recent' in api));
@@ -418,6 +424,6 @@ async function test() {
   assert.equal(socket.sent.length,nativeCount+1,'Read-only mode still forwards local methods');
   api.uninstall(); assert.equal(browser.WebSocket, Socket);
   if (process.argv[2]) fs.writeFileSync(process.argv[2], JSON.stringify(fixtures));
-  console.log('PASS: generated cosmetic script, all prod.js branches, local storage and responses, unknown fields, errors, native passthrough');
+  console.log('PASS: generated cosmetic script, all cosmetic branches, local storage and responses, unknown fields, errors, native passthrough');
 }
 test().catch(error => { console.error(error); process.exitCode = 1; });

@@ -43,10 +43,15 @@ const protocol = cosmeticProtocol(protobuf, require('../data/game-protocol.json'
 const compactProtocol = packProtocol(protocol.schema, protocol.methodMap);
 const version = require('../package.json').version;
 const metadata = `// ==UserScript==
-// @name         Majsoul WebSocket Cosmetics
-// @namespace    majsoul-local-hook
+// @name         Majsoul Mirage
+// @name:zh-CN   雀幻 · Majsoul Mirage
+// @name:ja      雀幻 · Majsoul Mirage
+// @namespace    majsoul-mirage
 // @version      ${version}
 // @description  Local cosmetic customization with a bundled cfg snapshot.
+// @match        https://mahjongsoul.game.yo-star.com/*
+// @match        https://majsoul.union-game.com/*
+// @match        https://game.mahjongsoul.com/*
 // @match        https://game.maj-soul.com/1/*
 // @run-at       document-start
 // @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js
@@ -59,7 +64,7 @@ const body = [config, source('protocol.cjs'), source('websocket-core.cjs'), sour
   `const protocol = unpackProtocol(${JSON.stringify(compactProtocol.definitions)}, ${JSON.stringify(compactProtocol.services)});`,
   `const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, ${JSON.stringify(version)});`,
   'installCosmeticHook(window, api, cfg);'].join('\n');
-const output = path.join(root, 'majsoul-websocket-hook.user.js');
+const output = path.join(root, 'majsoul-mirage.user.js');
 fs.writeFileSync(output, metadata + '\n(function () {\n'
   + body.trim().split('\n').map(line => line ? '  ' + line : '').join('\n') + '\n})();\n');
 console.log('Built', output, fs.statSync(output).size, 'bytes');

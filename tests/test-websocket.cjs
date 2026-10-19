@@ -24,6 +24,7 @@ class NativeSocket extends EventTarget {
 async function test(){
   const tasks=[],output=[],logs=[],warnings=[],scope={WebSocket:NativeSocket,MessageEvent,queueMicrotask,setTimeout(callback,delay){assert.equal(delay,0);tasks.push(callback);},console:{info(...a){output.push(a);logs.push(a.join(' '));},warn(...a){warnings.push(a.join(' '));}}};
   const api=installWebSocketHook(scope,protobuf,root,map);
+  assert.equal(scope.majsoulMirage,api);assert(!('majsoulWS' in scope));
   assert.equal(api.log,true);logs.length=0;
   assert.equal(api.debug,false);assert(!('recent' in api));
   assert.equal(installWebSocketHook(scope,protobuf,schema,map),api);
@@ -50,7 +51,7 @@ async function test(){
   assert.equal(decoded.account.title,99);assert.deepEqual(Buffer.from(decoded.$unknowns[0]),Buffer.from(unknown));
   assert.deepEqual(Buffer.from(decoded.account.$unknowns[0]),Buffer.from(unknown));
   assert.deepEqual(Buffer.from(parsed.wrapper.$unknowns[0]),Buffer.from(unknown));
-  assert.equal(logs.at(-1),'[MajsoulWS] modified response Lobby.login [ws:1 #8]');
+  assert.equal(logs.at(-1),'[MajsoulMirage] modified response Lobby.login [ws:1 #8]');
   // Connection-local request ID matching, including out-of-order responses.
   const matched=[];api.onResponse=ctx=>{matched.push([ctx.connection,ctx.method]);};
   a.send(request(9,'Lobby','fetchInfo'));b.send(request(9,'FastTest','authGame'));
@@ -61,14 +62,14 @@ async function test(){
   a.send(request(10,'Route','requestConnection',{timestamp:'9007199254740993',platform:'original'}));
   let sent=decodeFrame(a.sent.at(-1)),payload=decode(type('ReqRequestConnection'),sent.wrapper.data);
   assert.equal(payload.timestamp.toString(),'9007199254740993');assert.equal(payload.platform,'hook');
-  assert.equal(logs.at(-1),'[MajsoulWS] modified request Route.requestConnection [ws:1 #10]');
+  assert.equal(logs.at(-1),'[MajsoulMirage] modified request Route.requestConnection [ws:1 #10]');
   // Local responses use a microtask; request waiting callbacks are registered after send returns.
   api.onRequest=ctx=>ctx.method==='useTitle'?{respond:{}}:undefined;
   let waiting=false,localResponse;
   a.onmessage=e=>{if(decodeFrame(e.data).id===11){assert(waiting);localResponse=decodeFrame(e.data);}};
   const before=a.sent.length;a.send(request(11,'Lobby','useTitle',{title:5}));waiting=true;
   assert.equal(a.sent.length,before);assert.equal(localResponse,undefined);await Promise.resolve();assert.equal(localResponse.id,11);
-  assert.equal(logs.at(-1),'[MajsoulWS] intercepted request Lobby.useTitle [ws:1 #11] — local response queued');
+  assert.equal(logs.at(-1),'[MajsoulMirage] intercepted request Lobby.useTitle [ws:1 #11] — local response queued');
   assert.equal(api.stats.blocked,1);
   // Notification modifications are visible to native onmessage AND addEventListener.
   api.onNotify=ctx=>{assert.equal(ctx.name,'NotifyAccountUpdate');delete ctx.message.update.character;return true;};
@@ -76,7 +77,7 @@ async function test(){
   a.receive(frame(1,null,'.lq.NotifyAccountUpdate',raw(type('NotifyAccountUpdate'),{update:{character:{}}})));
   const notice=decode(type('NotifyAccountUpdate'),decodeFrame(received).wrapper.data);
   assert(!Object.prototype.hasOwnProperty.call(notice.update,'character'));assert.equal(other,received);
-  assert.equal(logs.at(-1),'[MajsoulWS] modified notify NotifyAccountUpdate [ws:1]');
+  assert.equal(logs.at(-1),'[MajsoulMirage] modified notify NotifyAccountUpdate [ws:1]');
   // Exceptions do not leak callback details or rewrite original requests/responses.
   api.onRequest=()=>{throw new Error('private token should not appear');};
   const bad=request(12,'Lobby','fetchInfo');a.send(bad);assert.equal(a.sent.at(-1),bad);
@@ -97,8 +98,8 @@ async function test(){
   assert.equal(logs.length,quiet);
   api.log='all';api.onResponse=null;
   a.send(request(15,'Lobby','fetchInfo'));a.receive(response(15,'Lobby','fetchInfo'));
-  assert.deepEqual(logs.slice(-2),['[MajsoulWS] pass request Lobby.fetchInfo [ws:1 #15]',
-    '[MajsoulWS] pass response Lobby.fetchInfo [ws:1 #15]']);
+  assert.deepEqual(logs.slice(-2),['[MajsoulMirage] pass request Lobby.fetchInfo [ws:1 #15]',
+    '[MajsoulMirage] pass response Lobby.fetchInfo [ws:1 #15]']);
   api.log=true;api.onRequest=()=>({respond:{}});
   const malformed=frame(2,16,'.lq.Lobby.useTitle',[255]),beforeDecode=logs.length;
   a.send(malformed);assert.equal(a.sent.at(-1),malformed);
@@ -210,7 +211,7 @@ async function test(){
   const c=new scope.WebSocket('wss://example.invalid/c');c.readyState=0;assert.throws(()=>c.send(request(1,'Lobby','fetchInfo')),/Connecting/);
   assert.equal(api.connections().find(x=>x.id===3).pending,0);c.close();b.close();
   assert.equal(api.connections().length,1);
-  api.uninstall();assert.equal(scope.WebSocket,NativeSocket);assert.equal(scope.majsoulWS,undefined);
+  api.uninstall();assert.equal(scope.WebSocket,NativeSocket);assert.equal(scope.majsoulMirage,undefined);assert.equal(scope.majsoulWS,undefined);
   assert.equal(Object.hasOwn(a,'send'),false);a.send(q);assert.equal(a.sent.at(-1),q);
   console.log('PASS: native event delivery, per-socket IDs, PB mutations, unknown nested fields, int64, synthetic replies, notifications, fail-through, cleanup');
 

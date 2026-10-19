@@ -1,33 +1,35 @@
-# 验证记录
+# Validation
 
-2026-10-18，用户确认 0.4.2 可以正常进入游戏。本次目录整理保持同一修改逻辑，
-并重新构建、运行以下检查：
+## Current baseline
 
-- `npm run build`：从源码、配置快照和裁剪协议生成安装脚本。
-- `npm test`：配置投影、全部 prod.js 修改分支、本地存储与响应、原生事件、多连接编号、
-  未知字段保留、64 位数据透传、异常回退和卸载。
-- `python tests/test-game-lua-decoder.py`：使用游戏原始 Lua protobuf 解码代码读取 52 条脚本响应和通知。
-  只替代原生 pb 字节原语；包含旧 fetchInfo 的 unpacked 编码失败回归。
-- `python scripts/update-cfg.py --offline`：验证资源缓存、配置导出、构建和业务测试完整流程。
-- 资源准备完成后，`npm ci`、构建和测试通过；生成的 JSON 和 Lua 缓存不纳入 Git。
+Version **0.5.1** was validated on **2026-10-19** with:
 
-配置快照包含 699 个相关物品、124 个角色、510 个皮肤、162 个称号、123 组表情和 160 个结局奖励。
-当前资源版本为 4.0.47(47)，具体资源包见 `data/cfg-resources.json`。
+- `npm run build`: generates the userscript from source, configuration, and sparse protocol definitions.
+- `npm test`: configuration projection, protocol restoration equality, cosmetic overrides, local storage/responses, native event delivery, per-socket request matching, unknown-field preservation, 64-bit passthrough, failure handling, and uninstall behavior.
+- `python tests/test-game-lua-decoder.py`: the original game Lua protobuf decoder accepted **104 responses and notifications**. Only native byte primitives are replaced; a regression checks that the old unpacked `fetchInfo` encoding fails.
+- `node --check majsoul-mirage.user.js`: generated JavaScript syntax.
+- `git diff --check`: whitespace validation.
 
-这些测试不能替代每次游戏升级后的页面验证。尤其应检查登录、进入大厅、切换装扮和进入对局。
-此前卡在 67% 的兼容错误来自重复数字字段的非 packed 编码；现已修正，并保留回归用例。
+Random-selection regressions cover local settings and reads, initialization, successful room entry, match-start selection, duplicate suppression, room/game UUID binding, same-game reconnects, no authentication redraws, manual character overrides, manual skin changes, and preservation of the saved pool.
 
-0.4.3 新增操作日志，已验证默认透传静默、修改与拦截提示、全部消息模式、关闭操作日志、
-错误阶段和消息定位、不输出正文，以及原生发送失败时不误报修改成功。
-生成脚本及游戏原始 Lua 解码器回归通过，尚未完成该版本的真实页面验证。
+Debugging regressions cover detached object snapshots, response/notification details, filtering, disabled payload output, and single decoding during read-only inspection. Scheduling tests verify that inbound-event notifications remain pending through the microtask checkpoint and run only in the following task. Local request responses still complete in a microtask.
 
-0.4.7 移除消息历史队列，支持按名称过滤或输出全部消息内容。已验证修改前后快照隔离、
-本地响应内容、未定义消息的字节输出、过滤无关消息、关闭调试停止输出，以及默认不输出正文。
+## Resource baseline
 
-0.4.8 按提供的新请求格式识别 emo_id，所有此类表情都假返回并构造本地通知。
-已验证不使用旧数字阈值、保留原始 JSON 文本、多连接座位隔离、认证失败后不复用旧座位、
-非表情广播透传，以及构造通知的 console 内容调试。真实页面播放效果尚待验证。
+The configuration snapshot contains 699 relevant items, 124 characters, 510 skins, 162 titles, 123 emoji groups, and 160 ending rewards. The last verified resource version was **4.0.47(47)**; generated `data/cfg-resources.json` records exact bundle sources and paths.
 
-0.4.9 增加换肤通知及当前房间状态维护。已验证房间响应初始化、玩家增减更新、账号与房间通知的顺序、
-主角色和其他角色的皮肤隔离、房主与位置保留、未知字段保留，以及离房和本人被移出后不回放旧数据。
-新增通知通过游戏原始 Lua 解码器，真实房间界面刷新尚待验证。
+The offline update workflow (`python scripts/update-cfg.py --offline`) and dependency installation/build after resource preparation were verified previously. Generated JSON and extracted Lua remain outside version control.
+
+## Earlier compatibility checks
+
+On **2026-10-18**, the user confirmed version **0.4.2** could enter the game. The earlier loading stall at 67% was caused by unpacked numeric repeated fields; packed encoding and regression coverage were added.
+
+Subsequent tests verified operation logging without default payload disclosure, native send failures without false success logs, emoji `emo_id` recognition, preservation of broadcast content, seat isolation, and resetting stale seats after failed authentication.
+
+Room tests cover membership changes, owner/position retention, unknown fields, notification order, skin isolation, and clearing stale data after leaving or self removal.
+
+## Limits and manual checks
+
+These automated results do not replace browser and game UI checks after an update. The latest random-character behavior, room display refresh, emoji playback, and browser-native event ordering have not been fully verified in the actual game.
+
+Before release, check login, lobby loading, room creation/joining, random settings, manual character/skin changes, matchmaking, reconnects, and leaving rooms. Compare read-only traffic on a fresh page when needed, and never share unredacted account or session data.

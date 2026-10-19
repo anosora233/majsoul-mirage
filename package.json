@@ -1,5 +1,5 @@
 {
-  "name": "majsoul-unlock",
+  "name": "majsoul-mirage",
   "version": "0.5.1",
   "private": true,
   "description": "Majsoul local cosmetic userscript over native WebSocket messages",

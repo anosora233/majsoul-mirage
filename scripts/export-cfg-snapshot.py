@@ -1,4 +1,4 @@
-"""Build-time only: project the game configuration fields used by prod.js."""
+"""Build-time only: project the configuration fields required by local cosmetic overrides."""
 import json
 import sys
 from pathlib import Path

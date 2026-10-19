@@ -1,139 +1,117 @@
-# WebSocket Cosmetics 0.5.1
+# Majsoul Mirage 0.5.1
 
-安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
-保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
-`@run-at document-start`、`@sandbox raw` 和 `@grant none`。
+## Installation and behavior
 
-这是 prod.js 修改逻辑的 WebSocket 版本。无需手动执行控制台命令，
-保留旧 `vip.*` localStorage 设置，原有页面中的装扮操作会直接使用本地选择。
+Build `majsoul-mirage.user.js`, install it in Tampermonkey, disable other cosmetic hook scripts, and refresh a supported game page. Preserve the complete header, including `@run-at document-start`, `@sandbox raw`, `@grant none`, and `@require`.
 
-- 登录、账号信息：替换本人的头像、头像框、称号、加载图等已有字段。
-- fetchInfo：提供角色、皮肤、表情、称号、结局奖励、装扮物品和保存的展示方案。
-- 选择角色、皮肤、称号、加载图、角色排序、隐藏角色、展示方案：保存到本地并返回本地成功响应。
-- `setRandomCharacter` 和 `fetchRandomCharacter` 在本地保存、读取启用状态及角色/皮肤候选池，设置不发往服务器。
-- 首次初始化沿用服务器随机设置，此后 `fetchInfo.random_character` 使用 `vip.char.random` 本地设置。
-- 启用随机后，进房或收到 `NotifyMatchGameStart` 时抽选；刷新房间不重抽，同一局按 `game_uuid` 重连保留选择。
-- 修改随机设置只保存开关和候选池，不抽选、不构造账号或房间通知，下次进入时应用。
-- 房间中手动换角色会清除本次随机结果并刷新本机房间展示；保留随机开关和候选池，下次进入时重新抽选。
-- 手动修改本次随机角色的皮肤会同步本次选择、账号和房间展示，不改写随机候选池；下次抽选仍使用候选池配置的皮肤。
-- 成功进房后构造 `NotifyAccountUpdate`，包含选中的角色和主角色皮肤；匹配对局在 `NotifyMatchGameStart` 后构造，认证时沿用选择。
-- 房间开局通知 `NotifyRoomGameStart` 只把已有选择绑定到 `game_uuid`，不抽选、不重复通知。
-- `authGame` 只应用该局已绑定的选择，不补选、不生成账号通知；页面刷新丢失选择且未收到开局通知时使用固定主角色。
-- 从房间进局、房间刷新和同局重连不重复构造随机账号通知；进入失败也不构造。关闭随机后，下次进入使用固定主角色。随机结果仅本机可见。
-- 修改角色皮肤后派发 `NotifyAccountUpdate`；在房间中同时派发 `NotifyRoomPlayerUpdate`，刷新本机房间界面。
-- 房间、牌谱、对局：应用本人装扮，将其他玩家的已有角色对象显示为满羁绊。
-- 账号更新通知：移除服务器角色和主角色更新；房间和对局奖励通知按原逻辑修改。
-- `.lq.FastTest.broadcastInGame`：包含整数 `emo_id` 的表情请求在本地假返回，并注入 `NotifyGameBroadcast`，保留原始 content，不发往服务器；其他广播原样发送。
+The script applies local cosmetic overrides through WebSocket messages and retains existing `vip.*` localStorage settings. No console commands are required for normal use. Local changes do not grant server-side ownership or change other players' displays.
 
-服务器返回错误时保持错误响应；不重复添加背包已有物品；角色没有额外表情时使用空数组。
-本地响应通过 microtask 延迟投递，让游戏先登记等待回调。装扮选择留在本地，
-不会改变服务器库存或其他玩家看到的装扮。
+- Login and account responses override existing avatar, frame, title, and loading-image fields for the local account.
+- `fetchInfo` supplies characters, skins, emoji, titles, ending rewards, cosmetic items, and saved view presets. Existing inventory stacks are retained without duplicate item IDs.
+- Character, skin, title, loading-image, character-order, hidden-character, and view-preset changes are stored locally and receive local responses.
+- Skin changes emit `NotifyAccountUpdate`; when in a room, they also emit `NotifyRoomPlayerUpdate` to refresh the local room display.
+- Room, replay, and match data use the local account's appearance. Other players retain their skins, while their existing character objects are displayed at maximum bond level.
+- Server character updates are removed from `NotifyAccountUpdate`. Main-character updates are removed or replaced with the current random selection. Room and reward notifications receive the corresponding cosmetic overrides.
+- `.lq.FastTest.broadcastInGame` requests containing an integer `emo_id` receive a local response and `NotifyGameBroadcast`. Their original `content` text is preserved and never sent to the server. Other broadcasts pass unchanged.
 
-## 状态与日志
+Server error responses remain errors. Characters without additional emoji use empty lists.
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.5.1` 和 `[MajsoulWS] cosmetics.ready`。
-默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
+## Supported sites
+
+- `https://mahjongsoul.game.yo-star.com/*`
+- `https://majsoul.union-game.com/*`
+- `https://game.mahjongsoul.com/*`
+- `https://game.maj-soul.com/1/*`
+
+## Random characters
+
+`setRandomCharacter` and `fetchRandomCharacter` save and read the enabled flag and `{character_id, skin_id}` pool locally. These requests do not reach the server. Initial setup imports server settings if no local settings exist; subsequent `fetchInfo.random_character` values come from `vip.char.random`.
+
+Selection occurs only on successful room entry or `NotifyMatchGameStart`. Both paths emit `NotifyAccountUpdate` with the selected character and main-character skin. Changing settings only saves the flag and pool; it neither draws a selection nor emits account or room notifications.
+
+`NotifyRoomGameStart` binds the existing room choice to `game_uuid` without another draw or notification. `authGame` only applies a choice already bound to that game. It never draws or emits random account updates. If a page refresh loses the choice and no start notification arrives, the fixed main character is used.
+
+Duplicate match-start notifications, room refreshes, and same-game reconnects do not redraw or emit duplicate random account updates. Failed room entry emits no update. Disabling random selection takes effect on the next entry.
+
+Manually changing character clears the current random choice and refreshes the room, while keeping random settings for the next entry. Manually changing the selected character's skin updates the current choice, account, and room display without rewriting the saved pool; the next draw uses the pool's configured skin.
+
+## Logging and debugging
+
+Use `majsoulMirage` as the console API. Existing `vip.*` storage keys are preserved.
+
+Startup prints `[MajsoulMirage] hook.ready 0.5.1` and `[MajsoulMirage] cosmetics.ready`. Default operation logs contain direction, name, connection, and request ID:
 
 ```text
-[MajsoulWS] modified response Lobby.fetchInfo [ws:1 #8]
-[MajsoulWS] intercepted request Lobby.useTitle [ws:1 #9] — local response queued
-[MajsoulWS] modified notify NotifyAccountUpdate [ws:1]
-[MajsoulWS] local notify NotifyGameBroadcast [ws:1] — synthetic notification
+[MajsoulMirage] modified response Lobby.fetchInfo [ws:1 #8]
+[MajsoulMirage] intercepted request Lobby.useTitle [ws:1 #9] — local response queued
+[MajsoulMirage] local notify NotifyGameBroadcast [ws:1] — synthetic notification
 ```
 
-`modified` 表示请求、响应或通知已重新编码并交给游戏或原生发送；
-`intercepted` 表示请求已由本地接管，未发往服务器，已安排本地响应。
-表情通知使用该连接 authGame 的本人座位号，先派发本地响应，再派发通知，仅自己可见。
-若座位未知，只返回本地响应并提示 `emoji.skipped — seat unavailable`；重新进入对局后会重新记录座位。
-解析或修改失败显示 `error`，标明消息、失败阶段和异常类型。普通消息保留原包透传；
-已确定由本地处理的请求失败时阻断原包，返回 `error.code = 1` 的本地错误响应，不派发通知。
-该错误码仅表示本地处理失败；已写入的本地设置不会自动回滚。只解析模式仍原样透传。
-默认日志只显示消息元信息；开启内容调试后，匹配消息的解码内容会直接输出到 console。
+| Action | Meaning |
+| --- | --- |
+| `pass` | Original message forwarded unchanged |
+| `modified` | Modified message re-encoded and delivered or sent |
+| `intercepted` | Request handled locally, with a local response queued |
+| `local` | Synthetic notification delivered locally |
+| `error` | Parsing or processing failed |
+
+Ordinary failures retain the original message. Known-local request failures block it and return a local `error.code = 1` response without notifications. This code denotes local processing failure, not a server result. Previously written local settings are not rolled back. Read-only mode forwards original traffic.
+
+Emoji notifications use the account's zero-based seat from that socket's `authGame.seat_list`. If unavailable, the request still receives a local response but no notification; `emoji.skipped — seat unavailable` is logged. Reauthentication resets the seat before finding it again.
 
 ```js
-majsoulWS.stats
-majsoulWS.readOnly = true // 只解析，跳过修改、阻断和本地响应/通知
-majsoulWS.readOnly = false // 恢复修改（默认）
-majsoulWS.active = false // 完全暂停，包括解析与日志
-majsoulWS.active = true  // 恢复 Hook
-majsoulWS.log = true  // 默认：只打印修改和拦截操作
-majsoulWS.log = 'all' // 同时打印普通透传消息，标记为 pass
-majsoulWS.log = false // 关闭操作与透传日志；错误警告保留
-majsoulWS.debug = 'FastTest.broadcastInGame' // 按名称片段筛选内容
-majsoulWS.debug = '.lq.Lobby.fetchInfo'     // 也可使用完整消息名称
-majsoulWS.debug = true                    // 输出全部可识别消息的内容
-majsoulWS.debug = false                   // 停止内容输出（默认）
-majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
+majsoulMirage.stats
+majsoulMirage.readOnly = true  // Decode without business hooks
+majsoulMirage.readOnly = false // Resume modifications; default
+majsoulMirage.active = false   // Pause parsing, logging, and modifications
+majsoulMirage.active = true    // Resume the hook
+majsoulMirage.log = true       // Default: modifications and interceptions
+majsoulMirage.log = 'all'      // Include ordinary passthrough logs
+majsoulMirage.log = false      // Suppress operation logs; warnings remain
+majsoulMirage.debug = 'FastTest.broadcastInGame' // Filter by name fragment
+majsoulMirage.debug = '.lq.Lobby.fetchInfo'      // Full names also work
+majsoulMirage.debug = true                     // Inspect all recognized traffic
+majsoulMirage.debug = false                    // Default: no payload output
+majsoulMirage.uninstall() // Remove the hook; refresh to reinstall
 ```
 
-只解析模式保留请求匹配、统计和内容调试，不调用业务 Hook，也不更新装扮、座位或房间缓存。
-它不会撤销已应用的装扮。若跨过登录、换房或进局后恢复修改，建议刷新页面以重新建立状态。
-切换前已拦截请求排队中的本地回复仍会完成，避免游戏等待回调悬空。
+Debugging is independent of operation logging. Each console entry is a plain, copyable object containing `action`, `direction`, `name`, `connection`, and `id`. Modified messages include detached `before` and `after` snapshots. Passthrough messages and local notifications include `message`. Intercepted requests include `request`, `response`, and any constructed `notifications` with their names and contents.
 
-`stats.modified` 是被修改的消息数，`blocked` 是拦截的请求数，`synthetic` 是生成的本地响应数。
-`localNotifications` 是实际派发的本地通知数；`debug = 'NotifyGameBroadcast'` 可以查看构造的通知内容。
-`debug = 'NotifyRoomPlayerUpdate'` 可查看房间更新内容，`debug = 'NotifyAccountUpdate'` 可查看换肤的角色更新。
-内容调试独立于 `log`，每条输出是一个可直接复制的普通对象，包含 `action`、`direction`、
-`name`、`connection` 和 `id`。修改消息包含 `before` 和 `after`；透传或本地通知包含 `message`。
-阻断请求包含 `request`、`response`，以及构造通知的 `notifications` 数组（名称和消息内容）。
-这些内容都是独立快照，不随后续修改变化。已知消息直接显示裁剪定义中的字段，不附带原始字节；
-无法识别或解码的消息保留 `bytes` 普通数组供检查。可右键对象选择“Copy object”复制。
+Known messages show only fields included in the sparse schema; unknown or undecodable messages expose a plain `bytes` array. Right-click an object and choose **Copy object**. Logs may contain sensitive account or session information; redact before sharing.
 
-不保存消息历史或内容队列，也不提供 `recent`；所有内容直接交给 console。
-仅为换肤刷新保留当前房间状态；房间响应与玩家变化通知都会更新它，离房或本人被移出后清除。
-房间玩家更新、准备和换装通知统一使用本地递增的 `seq`，本地换肤通知也递增；
-真实通知使用 `max(服务器 seq, 本地 seq + 1)`，避免被游戏当作旧通知忽略。
-房间响应初始化计数，查询当前房间不回退计数；重新进房、离房、被踢或切换账号时重置。
-只解析模式不改写 `seq`；从修改模式切换到只解析模式时建议刷新，避免此前抬高的序号影响真实通知。
-关闭内容调试后不再生成快照。请求编号匹配仍需保留少量元信息，不包含消息正文。
-响应按每条连接自己的请求编号匹配；每条连接最多保留 4096 个等待项，
-两分钟后在下一次处理协议帧时清除。
+`stats.modified` counts rewritten messages. For compatibility, `stats.blocked` counts intercepted requests; `synthetic` counts local responses, and `localNotifications` counts delivered synthetic notifications. No `recent` property or message history queue exists.
 
-脚本约 40 KB，内置裁剪后的业务定义和 cfg；通过油猴 `@require` 加载固定版本
-protobuf.js light 8.8.1，这是唯一外部运行依赖。不需要单独加载 Long，
-当前选择的字段不含 64 位整数，其他字段保留原始字节。
-没有完整协议表、Unity 解析器或 Lua 运行时。protobuf.js 负责编解码，未选中的字段作为原始未知字段保留。
-不相关消息直接透传；修改或解析失败时交还原消息。
-支持 ArrayBuffer、TypedArray、DataView，跳过文本和 Blob。
+Read-only mode retains decoding, request matching, counters, and debugging, but skips business hooks and state updates. It does not undo existing cosmetic changes. Already queued local replies still complete. Refresh when changing modes across login, room, or match transitions to rebuild state.
 
-## cfg 与更新
+## State and protocol handling
 
-`cfg` 和 `majsoulWS.cfg` 指向同一个裁剪配置对象，已有配置表不会被覆盖。
-内置 699 个 category 为 5 或 8 的物品、124 个角色、510 个皮肤、162 个称号、
-123 组表情和 160 个结局奖励，只保留 prod.js 使用的字段。
-数据以相邻差值和 base36 压缩，原始数值保存在 `data/cfg-snapshot.json`。
+The current room is cached for local display updates. Room responses and membership notifications refresh it; leaving, removal, or account changes clear it. Player-update, ready, and dressing notifications share a local increasing `seq`. Real notifications receive `max(server seq, local seq + 1)`; local room updates also increment it. Current-room fetches do not roll it back. Read-only mode preserves original sequence numbers; refresh before comparing against unmodified traffic.
+
+Responses are matched by request ID separately for each socket. Each connection holds at most 4096 pending metadata entries, without payload bodies. Entries expire after two minutes when another protocol frame is processed.
+
+Local request responses and attached notifications use a microtask so the client can register its callback after `send()` returns. Notifications attached to real inbound events use the next task (`setTimeout(..., 0)`) so native message listeners finish first. Synthetic events bypass incoming business hooks.
+
+The script uses fixed protobuf.js light 8.8.1 through `@require`. No separate Long library is needed for the selected fields. Unknown protobuf fields retain their original bytes during re-encoding. ArrayBuffer, TypedArray, and DataView are supported; text and Blob messages are skipped. No full protocol table, Unity parser, or Lua runtime is shipped to the browser.
+
+## Configuration and updates
+
+`cfg` and `majsoulMirage.cfg` refer to the same projected configuration. Existing configuration tables are not overwritten. The snapshot contains 699 category-5/8 items, 124 characters, 510 skins, 162 titles, 123 emoji groups, and 160 ending rewards. Numeric data uses delta/base36 compression; the generated source snapshot is `data/cfg-snapshot.json`.
 
 ```js
 cfg.item_definition.character.map_[200001].init_skin
 cfg.character.emoji.groups_[200001].map(row => row.sub_id)
 ```
 
-更新资源并重建脚本，在项目根目录运行：
+To update configuration and rebuild:
 
-```powershell
-python -m pip install -r requirements.txt
+```sh
 npm ci
-python scripts/update-cfg.py
+python -m pip install -r requirements.txt
+npm run cfg:update
 ```
 
-已有依赖时只需最后一行。需要 Python 3.10+ 和 Node.js。
-更新器读取最新资源索引，发现并下载配置包，使用当前资源中的解析辅助代码离线导出，
-重建用户脚本并运行配置和修改逻辑测试。完成后重新安装生成的用户脚本。
-Python、UnityPy 和 Lua 仅用于构建；不会进入浏览器脚本。
+The updater resolves resource bundles from the current index, exports configuration offline, rebuilds the script, and runs configuration and cosmetic tests. Reinstall the generated script afterward. Python, UnityPy, and Lua are build-time dependencies only.
 
-`--offline` 使用已保存的资源；`--base-url URL` 指定资源目录。
-`data/cfg-resources.json` 记录资源来源、包名和路径。快照不自动更新；
-资源格式或消息协议变化时，需要调整对应导出或协议代码。
+`--offline` uses cached resources; `--base-url URL` changes their source. Exporters execute resource Lua, so only use trusted inputs. `data/cfg-resources.json` records sources and paths. Snapshots do not update automatically, and resource or protocol changes may require code updates.
 
-## 源码与测试
-
-正式代码位于 `src/`，工具位于 `scripts/`，构建输入位于 `data/`。
-修改与验证命令见 [维护说明](maintenance.md) 和 [验证记录](validation.md)。
-
-```powershell
-npm run build
-npm test
-npm run test:lua
-```
-
-0.4.2 修复了重复数字字段的 packed 编码兼容性，用户已确认可以进入游戏。
+See [maintenance](maintenance.md) and [validation](validation.md) for build and test details.

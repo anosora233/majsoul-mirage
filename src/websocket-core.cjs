@@ -3,7 +3,7 @@
  * protobuf.js handles encoding, 64-bit values and unknown-field preservation.
  */
 function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
-  if (scope.majsoulWS) return scope.majsoulWS;
+  if (scope.majsoulMirage) return scope.majsoulMirage;
   const NativeSocket = scope.WebSocket;
   if (typeof NativeSocket !== 'function') throw new Error('Native WebSocket unavailable');
   const root = schema.lookupType ? schema : protobuf.Root.fromJSON(schema).resolveAll();
@@ -21,7 +21,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
       api.active = false;
       if (scope.WebSocket === WrappedSocket) scope.WebSocket = NativeSocket;
       for (const state of Array.from(sockets.values())) cleanup(state);
-      if (scope.majsoulWS === api) delete scope.majsoulWS;
+      if (scope.majsoulMirage === api) delete scope.majsoulMirage;
     }
   };
   const typeCache = new Map();
@@ -89,7 +89,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
   function format(record, detail = '') {
     const name = record.service ? record.service+'.'+record.method : record.method || '<unknown>';
     const id = record.id == null ? '' : ' #'+record.id;
-    return '[MajsoulWS] '+record.action+' '+record.direction+' '+name
+    return '[MajsoulMirage] '+record.action+' '+record.direction+' '+name
       +' [ws:'+record.connection+id+']'+(detail ? ' — '+detail : '');
   }
   function report(record, action, detail = '') {
@@ -269,8 +269,8 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
     socket.send=state.send;sockets.set(socket,state);
   }
   const WrappedSocket=new Proxy(NativeSocket,{construct(target,args,newTarget){const socket=Reflect.construct(target,args,newTarget);attach(socket);return socket;}});
-  scope.majsoulWS=api;scope.WebSocket=WrappedSocket;
-  scope.console.info('[MajsoulWS] hook.ready',api.version);
+  scope.majsoulMirage=api;scope.WebSocket=WrappedSocket;
+  scope.console.info('[MajsoulMirage] hook.ready',api.version);
   return api;
 }
 module.exports={installWebSocketHook};

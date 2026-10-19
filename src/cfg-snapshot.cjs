@@ -1,4 +1,4 @@
-// Only fields used by prod.js. Static snapshot; regenerate when game content changes.
+// Only fields required by local cosmetic overrides. Static snapshot; regenerate when game content changes.
 const configData = require('../data/cfg-snapshot.json');
 
 function installConfigSnapshot(scope) {
