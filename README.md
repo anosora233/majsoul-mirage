@@ -30,6 +30,8 @@ The script intercepts native WebSocket messages, decodes selected protobuf field
 
 ## 🛠️ Build
 
+Install the [latest release asset](https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js), or build locally below. See [maintenance](docs/maintenance.md) for resource updates and automated releases.
+
 Requirements: Node.js 20+, Python 3.10+, and network access for initial dependencies and game resources.
 
 ```sh

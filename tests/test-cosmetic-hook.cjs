@@ -43,7 +43,7 @@ async function test() {
     'https://game.mahjongsoul.com/*',
     'https://game.maj-soul.com/1/*'
   ]);
-  assert(Buffer.byteLength(generated) < 47000, 'Keep compact protocol data and external protobuf.js');
+  assert(Buffer.byteLength(generated) < 128 * 1024, 'Allow resource growth while keeping protobuf.js external');
   assert(generated.includes('// @require      https://cdn.jsdelivr.net/npm/protobufjs@8.8.1/dist/light/protobuf.min.js'));
   const context = vm.createContext({window:browser, TextDecoder, TextEncoder, URL, setTimeout, clearTimeout});
   vm.runInContext(fs.readFileSync(require.resolve('protobufjs/dist/light/protobuf.min.js'), 'utf8'), context);
@@ -137,11 +137,11 @@ async function test() {
     bag_info:{bag:{items:[{item_id:owned, stack:8}, {item_id:999999,stack:9}]}},
     server_time:{server_time:123456}
   });
-  assert.equal(info.character_info.characters.length, 124);
+  assert.equal(info.character_info.characters.length, Object.keys(cfg.item_definition.character.map_).length);
   assert.equal(info.character_info.main_character_id, 200001);
   assert.equal(info.character_info.characters.find(row => row.charid === 200001).skin, 400101);
   assert.deepEqual(Array.from(info.character_info.other_character_sort), [200007]);
-  assert.equal(info.title_list.title_list.length, 162);
+  assert.equal(info.title_list.title_list.length, Object.keys(cfg.item_definition.title.map_).length);
   assert.equal(info.bag_info.bag.items.filter(item => item.item_id === owned).length, 1);
   assert.equal(info.bag_info.bag.items.find(item => item.item_id === owned).stack, 8);
   assert.equal(info.bag_info.bag.items.find(item => item.item_id === 999999).stack, 9);

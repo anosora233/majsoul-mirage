@@ -70,3 +70,25 @@ Numeric repeated fields must use packed encoding: the game Lua decoder rejects s
 `data/*.json`, `.cache/lua/`, and the root `.user.js` artifact are generated and untracked. Prepare resources before the first build. Install dependencies from `package-lock.json` and `requirements.txt`.
 
 Keep local diagnostics in `.cache/`. Never commit credentials, raw account/session traffic, or real capture files as test fixtures. Use synthetic tokens and IDs in tests, and redact debug output before sharing it.
+
+## Automated resource releases
+
+`.github/workflows/resources-release.yml` checks daily at 09:17 UTC (17:17 in Asia/Shanghai and Asia/Singapore) and supports **Actions → Update resources and latest release → Run workflow**. Manual runs must target the default branch; enable `force` to rebuild unchanged inputs. The workflow must be pushed to the default branch and Actions must be enabled. GitHub schedules can be delayed and are not real-time game update events.
+
+The afternoon check is a polling choice, not an official maintenance schedule. Announced updates vary, so the workflow checks every day rather than only on Wednesdays. Updates after the check are detected the next day unless triggered manually.
+
+`scripts/release-resources.cjs check` hashes the public `bundle_info_so.majset` resource index using SHA-256 and compares it and the source commit with `resource-version.json` from the rolling release. A changed index signals a resource update, not an official numeric game version or necessarily a relevant configuration change. All four site matches currently share this one resource source; region-specific indices are not polled separately. A missing release triggers the initial build; HTTP errors fail the check instead of being treated as a new version.
+
+Changed inputs trigger a fresh resource/protocol export, build, JavaScript tests, original Lua decoder tests, and syntax validation. Only successful jobs pass the script and provenance metadata to publishing. The resource-processing job has read-only repository permissions, no persisted checkout credentials, and no release token in its environment. A separate publishing job has `contents: write` and never executes resource code. The built-in `GITHUB_TOKEN` is sufficient; no personal access token is needed.
+
+Publishing reuses the **`latest` tag and release**, replaces `majsoul-mirage.user.js` and `resource-version.json`, and updates the notes. The tag moves to the built source commit; no additional releases or version tags accumulate. Other manually created releases are left untouched. Build/test failures preserve the previous release. Repository release immutability must not prevent updates to this rolling release.
+
+The metadata records the source commit, actual built resource-index hash, userscript hash, application version, and build timestamp. Resource-only rebuilds do not increment `package.json` or commit generated data. They also do not configure automatic userscript installation updates; reinstall the latest asset when needed.
+
+Stable download URL:
+
+```text
+https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js
+```
+
+The workflow uses a one-day Actions artifact to transfer files between jobs; it is independent of the single public rolling Release. Actual hosted workflow execution must be verified after pushing.

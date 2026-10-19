@@ -6,6 +6,7 @@
 - `src/cosmetic-hook.cjs`: cosmetic overrides, local storage, room state, and emoji behavior.
 - `src/cfg-snapshot.cjs` and `src/protocol.cjs`: configuration adaptation and compact protocol restoration.
 - `scripts/`: build tooling, resource downloads, and configuration/protocol exporters.
+- `.github/workflows/resources-release.yml`: resource polling, isolated build/tests, and a single rolling `latest` release.
 - `tests/`: JavaScript regressions and original game Lua decoder validation.
 - `docs/`: usage, maintenance, and validation notes.
 - `majsoul-mirage.user.js`: untracked, installable build output. Generate with `npm run build`; never patch it directly.

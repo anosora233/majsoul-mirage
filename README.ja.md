@@ -30,6 +30,8 @@
 
 ## 🛠️ ビルド
 
+[最新の Release 成果物](https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js)をインストールするか、以下の手順でビルドしてください。リソース更新と自動公開の詳細は[保守ドキュメント](docs/maintenance.md)を参照してください。
+
 Node.js 20+、Python 3.10+ が必要です。依存関係とゲームリソースの初回取得にはネットワーク接続が必要です。
 
 ```sh

@@ -105,7 +105,8 @@ with tempfile.TemporaryDirectory(dir=ROOT / '.cache') as directory:
             assert decoded.seat in (1, 2)
             assert 'emo_id' in json.loads(decoded.content)
         if fixture['type'] == 'ResFetchInfo' and decoded.character_info.characters[1]:
-            assert len(decoded.character_info.characters) == 124
+            snapshot = json.loads((ROOT / 'data/cfg-snapshot.json').read_text(encoding='utf8'))
+            assert len(decoded.character_info.characters) == len(snapshot['characters'])
             assert decoded.character_info.main_character_id == 200001
             if fixture.get('unpackedData'):
                 assert decoded.server_time.server_time == 123456

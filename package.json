@@ -6,7 +6,7 @@
   "engines": {"node": ">=20"},
   "scripts": {
     "build": "node scripts/build-websocket-userscript.cjs",
-    "test": "node tests/test-cfg-snapshot.cjs && node tests/test-cosmetic-hook.cjs && node tests/test-websocket.cjs",
+    "test": "node tests/test-cfg-snapshot.cjs && node tests/test-cosmetic-hook.cjs && node tests/test-websocket.cjs && node tests/test-release-resources.cjs",
     "test:lua": "python tests/test-game-lua-decoder.py",
     "cfg:update": "python scripts/update-cfg.py",
     "resources:prepare": "python scripts/update-cfg.py --protocol",
