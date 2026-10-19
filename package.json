@@ -3,7 +3,7 @@
   "version": "0.5.1",
   "private": true,
   "description": "Majsoul local cosmetic userscript over native WebSocket messages",
-  "engines": {"node": ">=20"},
+  "engines": {"node": ">=24"},
   "scripts": {
     "build": "node scripts/build-websocket-userscript.cjs",
     "test": "node tests/test-cfg-snapshot.cjs && node tests/test-cosmetic-hook.cjs && node tests/test-websocket.cjs && node tests/test-release-resources.cjs",

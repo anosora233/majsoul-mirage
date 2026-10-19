@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-0.5.1-6366f1?style=flat-square)
 ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white)
 
 **English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
@@ -32,7 +32,7 @@ The script intercepts native WebSocket messages, decodes selected protobuf field
 
 Install the [latest release asset](https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js), or build locally below. See [maintenance](docs/maintenance.md) for resource updates and automated releases.
 
-Requirements: Node.js 20+, Python 3.10+, and network access for initial dependencies and game resources.
+Requirements: Node.js 24+, Python 3.10+, and network access for initial dependencies and game resources.
 
 ```sh
 npm ci

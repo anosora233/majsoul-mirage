@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-0.5.1-6366f1?style=flat-square)
 ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white)
 
 [English](README.md) | [日本語](README.ja.md) | **简体中文**
@@ -32,7 +32,7 @@
 
 可安装[最新 Release 产物](https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js)，或按下方步骤自行构建。资源更新与自动发布详见[维护文档](docs/maintenance.md)。
 
-需要 Node.js 20+、Python 3.10+。首次安装依赖和获取游戏资源需要网络连接。
+需要 Node.js 24+、Python 3.10+。首次安装依赖和获取游戏资源需要网络连接。
 
 ```sh
 npm ci

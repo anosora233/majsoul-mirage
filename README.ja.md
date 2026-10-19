@@ -2,7 +2,7 @@
 
 ![Version](https://img.shields.io/badge/version-0.5.1-6366f1?style=flat-square)
 ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat-square&logo=javascript&logoColor=black)
-![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
+![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-339933?style=flat-square&logo=nodedotjs&logoColor=white)
 ![Tampermonkey](https://img.shields.io/badge/Tampermonkey-00485B?style=flat-square&logo=tampermonkey&logoColor=white)
 
 [English](README.md) | **日本語** | [简体中文](README.zh-CN.md)
@@ -32,7 +32,7 @@
 
 [最新の Release 成果物](https://github.com/anosora233/majsoul-mirage/releases/latest/download/majsoul-mirage.user.js)をインストールするか、以下の手順でビルドしてください。リソース更新と自動公開の詳細は[保守ドキュメント](docs/maintenance.md)を参照してください。
 
-Node.js 20+、Python 3.10+ が必要です。依存関係とゲームリソースの初回取得にはネットワーク接続が必要です。
+Node.js 24+、Python 3.10+ が必要です。依存関係とゲームリソースの初回取得にはネットワーク接続が必要です。
 
 ```sh
 npm ci

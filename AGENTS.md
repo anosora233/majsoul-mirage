@@ -15,7 +15,7 @@ Generated `data/*.json`, extracted Lua, `.cache/`, and dependencies stay untrack
 
 ## Build, Test, and Development Commands
 
-Use Node.js 20+ and Python 3.10+:
+Use Node.js 24+ and Python 3.10+:
 
 ```powershell
 npm ci
