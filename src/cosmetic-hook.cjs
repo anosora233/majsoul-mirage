@@ -59,6 +59,7 @@ function installCosmeticHook(scope, api, cfg) {
   }
   const localRequests = {
     fetchRandomCharacter: randomSettings,
+    fetchTitleList: () => ({title_list:ids(definitions.title)}),
     setRandomCharacter(message) {
       const pool = message.pool.map(({character_id, skin_id}) => ({character_id, skin_id}));
       if (message.enabled && !pool.length || pool.some(entry => !definitions.character.map_[entry.character_id] || !definitions.skin.map_[entry.skin_id])) {

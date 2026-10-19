@@ -17,7 +17,7 @@ function cosmeticProtocol(protobuf, schema, config) {
     ReqAuthGame:'account_id game_uuid', ReqFinishedEnding:''
   };
   const lobby = 'login emailLogin oauth2Login fetchInfo joinRoom fetchRoom createRoom fetchGameRecord fetchAccountInfo '
-    + 'useTitle setLoadingImage changeMainCharacter changeCharacterSkin updateCharacterSort setHiddenCharacter '
+    + 'useTitle setLoadingImage changeMainCharacter changeCharacterSkin updateCharacterSort setHiddenCharacter fetchTitleList '
     + 'useCommonView saveCommonViews addFinishedEnding leaveRoom setRandomCharacter fetchRandomCharacter';
   const methods = {Lobby:lobby.split(' '), FastTest:['authGame', 'broadcastInGame']};
   const result = new protobuf.Root(), methodMap = {service:{}};
