@@ -1,4 +1,4 @@
-# WebSocket Cosmetics 0.4.12
+# WebSocket Cosmetics 0.5.1
 
 安装根目录 `majsoul-websocket-hook.user.js`，停用旧 prod、Lua 和 WebSocket 脚本，
 保存后刷新 `https://game.maj-soul.com/1/`。保留脚本头中的
@@ -10,6 +10,16 @@
 - 登录、账号信息：替换本人的头像、头像框、称号、加载图等已有字段。
 - fetchInfo：提供角色、皮肤、表情、称号、结局奖励、装扮物品和保存的展示方案。
 - 选择角色、皮肤、称号、加载图、角色排序、隐藏角色、展示方案：保存到本地并返回本地成功响应。
+- `setRandomCharacter` 和 `fetchRandomCharacter` 在本地保存、读取启用状态及角色/皮肤候选池，设置不发往服务器。
+- 首次初始化沿用服务器随机设置，此后 `fetchInfo.random_character` 使用 `vip.char.random` 本地设置。
+- 启用随机后，进房或收到 `NotifyMatchGameStart` 时抽选；刷新房间不重抽，同一局按 `game_uuid` 重连保留选择。
+- 修改随机设置只保存开关和候选池，不抽选、不构造账号或房间通知，下次进入时应用。
+- 房间中手动换角色会清除本次随机结果并刷新本机房间展示；保留随机开关和候选池，下次进入时重新抽选。
+- 手动修改本次随机角色的皮肤会同步本次选择、账号和房间展示，不改写随机候选池；下次抽选仍使用候选池配置的皮肤。
+- 成功进房后构造 `NotifyAccountUpdate`，包含选中的角色和主角色皮肤；匹配对局在 `NotifyMatchGameStart` 后构造，认证时沿用选择。
+- 房间开局通知 `NotifyRoomGameStart` 只把已有选择绑定到 `game_uuid`，不抽选、不重复通知。
+- `authGame` 只应用该局已绑定的选择，不补选、不生成账号通知；页面刷新丢失选择且未收到开局通知时使用固定主角色。
+- 从房间进局、房间刷新和同局重连不重复构造随机账号通知；进入失败也不构造。关闭随机后，下次进入使用固定主角色。随机结果仅本机可见。
 - 修改角色皮肤后派发 `NotifyAccountUpdate`；在房间中同时派发 `NotifyRoomPlayerUpdate`，刷新本机房间界面。
 - 房间、牌谱、对局：应用本人装扮，将其他玩家的已有角色对象显示为满羁绊。
 - 账号更新通知：移除服务器角色和主角色更新；房间和对局奖励通知按原逻辑修改。
@@ -21,18 +31,18 @@
 
 ## 状态与日志
 
-安装后出现英语日志 `[MajsoulWS] hook.ready 0.4.12` 和 `[MajsoulWS] cosmetics.ready`。
+安装后出现英语日志 `[MajsoulWS] hook.ready 0.5.1` 和 `[MajsoulWS] cosmetics.ready`。
 默认只打印修改和拦截操作，每个操作一行，包含方向、消息名称、连接和请求编号：
 
 ```text
 [MajsoulWS] modified response Lobby.fetchInfo [ws:1 #8]
-[MajsoulWS] blocked request Lobby.useTitle [ws:1 #9] — local response queued
+[MajsoulWS] intercepted request Lobby.useTitle [ws:1 #9] — local response queued
 [MajsoulWS] modified notify NotifyAccountUpdate [ws:1]
 [MajsoulWS] local notify NotifyGameBroadcast [ws:1] — synthetic notification
 ```
 
 `modified` 表示请求、响应或通知已重新编码并交给游戏或原生发送；
-`blocked` 表示请求未发往服务器，已安排本地响应。
+`intercepted` 表示请求已由本地接管，未发往服务器，已安排本地响应。
 表情通知使用该连接 authGame 的本人座位号，先派发本地响应，再派发通知，仅自己可见。
 若座位未知，只返回本地响应并提示 `emoji.skipped — seat unavailable`；重新进入对局后会重新记录座位。
 解析或修改失败显示 `error`，标明消息、失败阶段和异常类型。普通消息保留原包透传；
@@ -63,10 +73,11 @@ majsoulWS.uninstall() // 停止 Hook；刷新后重新启用
 `stats.modified` 是被修改的消息数，`blocked` 是拦截的请求数，`synthetic` 是生成的本地响应数。
 `localNotifications` 是实际派发的本地通知数；`debug = 'NotifyGameBroadcast'` 可以查看构造的通知内容。
 `debug = 'NotifyRoomPlayerUpdate'` 可查看房间更新内容，`debug = 'NotifyAccountUpdate'` 可查看换肤的角色更新。
-内容调试独立于 `log`。设置后再次操作游戏，即可展开对应的 `— content` console 记录：
-`before` 是原消息，`after` 是修改后的消息，`response` 是拦截请求的本地响应。
-每个快照包含 `message`（已知字段的普通对象）和 `bytes`（完整业务 payload 的字节副本），
-不会随着后续修改变化。协议定义经过裁剪，未定义字段或消息只能查看原始字节。
+内容调试独立于 `log`，每条输出是一个可直接复制的普通对象，包含 `action`、`direction`、
+`name`、`connection` 和 `id`。修改消息包含 `before` 和 `after`；透传或本地通知包含 `message`。
+阻断请求包含 `request`、`response`，以及构造通知的 `notifications` 数组（名称和消息内容）。
+这些内容都是独立快照，不随后续修改变化。已知消息直接显示裁剪定义中的字段，不附带原始字节；
+无法识别或解码的消息保留 `bytes` 普通数组供检查。可右键对象选择“Copy object”复制。
 
 不保存消息历史或内容队列，也不提供 `recent`；所有内容直接交给 console。
 仅为换肤刷新保留当前房间状态；房间响应与玩家变化通知都会更新它，离房或本人被移出后清除。

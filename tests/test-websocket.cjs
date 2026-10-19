@@ -22,7 +22,7 @@ class NativeSocket extends EventTarget {
   close(){this.readyState=3;this.dispatchEvent(new Event('close'));}
 }
 async function test(){
-  const output=[],logs=[],warnings=[],scope={WebSocket:NativeSocket,MessageEvent,queueMicrotask,console:{info(...a){output.push(a);logs.push(a.join(' '));},warn(...a){warnings.push(a.join(' '));}}};
+  const tasks=[],output=[],logs=[],warnings=[],scope={WebSocket:NativeSocket,MessageEvent,queueMicrotask,setTimeout(callback,delay){assert.equal(delay,0);tasks.push(callback);},console:{info(...a){output.push(a);logs.push(a.join(' '));},warn(...a){warnings.push(a.join(' '));}}};
   const api=installWebSocketHook(scope,protobuf,root,map);
   assert.equal(api.log,true);logs.length=0;
   assert.equal(api.debug,false);assert(!('recent' in api));
@@ -68,7 +68,7 @@ async function test(){
   a.onmessage=e=>{if(decodeFrame(e.data).id===11){assert(waiting);localResponse=decodeFrame(e.data);}};
   const before=a.sent.length;a.send(request(11,'Lobby','useTitle',{title:5}));waiting=true;
   assert.equal(a.sent.length,before);assert.equal(localResponse,undefined);await Promise.resolve();assert.equal(localResponse.id,11);
-  assert.equal(logs.at(-1),'[MajsoulWS] blocked request Lobby.useTitle [ws:1 #11] — local response queued');
+  assert.equal(logs.at(-1),'[MajsoulWS] intercepted request Lobby.useTitle [ws:1 #11] — local response queued');
   assert.equal(api.stats.blocked,1);
   // Notification modifications are visible to native onmessage AND addEventListener.
   api.onNotify=ctx=>{assert.equal(ctx.name,'NotifyAccountUpdate');delete ctx.message.update.character;return true;};
@@ -110,26 +110,32 @@ async function test(){
   const debugStart=output.length;
   const original=response(18,'Lobby','fetchInfo',{character_info:{main_character_id:200007}});
   a.send(request(18,'Lobby','fetchInfo'));a.receive(original);
-  const snapshots=output.slice(debugStart).filter(entry=>entry[0].includes(' — content'));
+  const snapshots=output.slice(debugStart).filter(entry=>typeof entry[0] === 'object');
   assert.equal(snapshots.length,2);
-  const snapshot=snapshots.find(entry=>entry[0].includes('response'))[1];
-  assert.equal(snapshot.before.message.character_info.main_character_id,200007);
-  assert.equal(snapshot.after.message.character_info.main_character_id,200001);
-  assert.deepEqual(Buffer.from(snapshot.before.bytes),Buffer.from(decodeFrame(original).wrapper.data));
+  const snapshot=snapshots.find(entry=>entry[0].direction === 'response')[0];
+  assert.equal(snapshot.before.character_info.main_character_id,200007);
+  assert.equal(snapshot.after.character_info.main_character_id,200001);
+  assert.equal(snapshot.name,'.lq.Lobby.fetchInfo');assert.equal(snapshot.action,'modified');assert(!('bytes' in snapshot.before));
   assert(!('content' in api));assert(!('recent' in api));
   const filtered=output.length;
   a.send(request(19,'Lobby','useTitle',{title:7}));a.receive(response(19,'Lobby','useTitle'));
   assert.equal(output.length,filtered,'The content filter must suppress unrelated messages');
-  api.debug='broadcastInGame';api.onRequest=()=>({respond:{}});
+  api.debug='broadcastInGame';
+  const localNotice={seat:2,content:'{"emo_id":70004}'};
+  api.onRequest=()=>({respond:{},notify:{name:'NotifyGameBroadcast',message:localNotice}});
   const blockedStart=output.length;
   a.send(request(20,'FastTest','broadcastInGame',{content:'{"emo":9}'}));await Promise.resolve();
-  const blocked=output.slice(blockedStart).find(entry=>entry[0].includes(' — content'))[1];
-  assert.equal(blocked.before.message.content,'{"emo":9}');assert.deepEqual(blocked.response.message,{});
+  const blocked=output.slice(blockedStart).find(entry=>typeof entry[0] === 'object')[0];
+  assert.equal(blocked.request.content,'{"emo":9}');assert.deepEqual(blocked.response,{});
+  assert.equal(blocked.action,'intercepted');assert.equal(blocked.id,20);
+  assert.deepEqual(blocked.notifications,[{name:'.lq.NotifyGameBroadcast',message:{seat:2,content:'{"emo_id":70004}'}}]);
+  localNotice.seat=3;assert.equal(blocked.notifications[0].message.seat,2);
+  assert(output.slice(blockedStart).filter(entry=>typeof entry[0] === 'object').every(entry=>entry.length===1));
   api.debug=true;api.onRequest=null;api.onResponse=null;
   const rawStart=output.length,opaque=Buffer.from([255,0,1]);
   a.send(frame(2,21,'.lq.Lobby.futureMethod',opaque));
-  const rawSnapshot=output.slice(rawStart).find(entry=>entry[0].includes(' — content'))[1];
-  assert(!('message' in rawSnapshot.before));assert.deepEqual(Buffer.from(rawSnapshot.before.bytes),opaque);
+  const rawSnapshot=output.slice(rawStart).find(entry=>typeof entry[0] === 'object')[0];
+  assert.deepEqual(Buffer.from(rawSnapshot.message.bytes),opaque);
   api.debug=false;
   const stopped=output.length;a.send(request(22,'Lobby','fetchInfo'));a.receive(response(22,'Lobby','fetchInfo'));
   assert.equal(output.length,stopped);
@@ -154,9 +160,9 @@ async function test(){
   for(const key of ['modified','blocked','synthetic','localNotifications','errors'])assert.equal(api.stats[key],baseline[key]);
   assert.equal(api.stats.requests,baseline.requests+1);assert.equal(api.stats.responses,baseline.responses+1);
   assert.equal(api.stats.notifications,baseline.notifications+1);
-  const inspected=output.slice(inspection).filter(entry=>entry[0].includes(' — content'));
-  assert.equal(inspected.length,3);assert.equal(inspected[0][1].before.message.title,7);
-  assert(inspected.every(entry=>!entry[1].after && !entry[1].response));
+  const inspected=output.slice(inspection).filter(entry=>typeof entry[0] === 'object');
+  assert.equal(inspected.length,3);assert.equal(inspected[0][0].message.title,7);
+  assert(inspected.every(entry=>!entry[0].after && !entry[0].response));
   assert.deepEqual(decodes,{ReqUseTitle:1,ResCommon:1,NotifyAccountUpdate:1},'Debug inspection reuses decoded messages');
   restore.forEach(reset=>reset());
   api.readOnly=false;api.debug=false;api.onRequest=()=>({respond:{}});
@@ -175,6 +181,23 @@ async function test(){
   responseType.encode=responseEncoder;
   assert.equal(a.sent.length,localSent);
   assert.equal(decode(type('ResCommon'),decodeFrame(received).wrapper.data).error.code,1);
+  // Notifications attached to real responses arrive after native response listeners.
+  api.onRequest=null;
+  api.onResponse=ctx=>{ctx.notify={name:'NotifyGameBroadcast',message:{seat:2,content:'{"emo_id":70004}'}};return true;};
+  api.onNotify=()=>{throw Error('Synthetic notification entered incoming hooks');};
+  const responseEvents=[], trackResponse=event=>responseEvents.push(decodeFrame(event.data).kind);
+  a.addEventListener('message',trackResponse);
+  const beforeResponseErrors=api.stats.errors;
+  a.send(request(27,'Lobby','fetchInfo'));a.receive(response(27,'Lobby','fetchInfo'));
+  assert.deepEqual(responseEvents,[3]);
+  assert.equal(decodeFrame(received).kind,3);
+  await Promise.resolve();
+  assert.deepEqual(responseEvents,[3],'Inbound notifications must wait beyond the microtask checkpoint');
+  assert.equal(tasks.length,1);tasks.shift()();
+  assert.deepEqual(responseEvents,[3,1]);
+  assert.equal(decodeFrame(received).wrapper.name,'.lq.NotifyGameBroadcast');
+  assert.equal(api.stats.errors,beforeResponseErrors);
+  a.removeEventListener('message',trackResponse);
   // A native send failure must not be reported as a successful modification.
   class BrokenSocket extends NativeSocket { send(){throw Error('Native send failed');} }
   const failedScope={WebSocket:BrokenSocket,MessageEvent,queueMicrotask,console:scope.console};

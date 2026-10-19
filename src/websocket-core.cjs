@@ -71,15 +71,20 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
   function capture(record, type, payload, phase = 'before', message) {
     const name = '.lq.'+(record.service ? record.service+'.'+record.method : record.method);
     if (api.debug !== true && !(typeof api.debug === 'string' && api.debug && name.includes(api.debug))) return;
-    const snapshot = {bytes:Uint8Array.from(payload)};
-    if (type) {
-      try { snapshot.message = type.toObject(message ?? decode(type,payload),{longs:String,bytes:String,enums:String}); }
-      catch (exception) { snapshot.error = exception.name; }
-    }
-    (record.content ||= {})[phase] = snapshot;
+    let snapshot;
+    try { snapshot = type ? type.toObject(message ?? decode(type,payload),{longs:String,bytes:String,enums:String}) : {bytes:Array.from(payload)}; }
+    catch (exception) { snapshot = {error:exception.name, bytes:Array.from(payload)}; }
+    const content = record.content ||= {};
+    if (phase === 'notifications') (content.notifications ||= []).push({name:type.fullName, message:snapshot});
+    else content[phase] = snapshot;
   }
   function dump(record) {
-    if (record.content) scope.console.info(format(record)+' — content',record.content);
+    if (!record.content) return;
+    const {before, ...details} = record.content;
+    const phase = record.action === 'intercepted' ? 'request' : record.action === 'pass' || record.action === 'local' ? 'message' : 'before';
+    scope.console.info({action:record.action, direction:record.direction,
+      name:'.lq.'+(record.service ? record.service+'.'+record.method : record.method),
+      connection:record.connection, id:record.id, [phase]:before, ...details});
   }
   function format(record, detail = '') {
     const name = record.service ? record.service+'.'+record.method : record.method || '<unknown>';
@@ -112,6 +117,27 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
     if (action && typeof action.then==='function') throw new TypeError('WebSocket business hooks must be synchronous');
     return action;
   }
+  function notifications(notices) {
+    return (Array.isArray(notices) ? notices : notices ? [notices] : []).map(notice=>{
+      const type=api.lookupType(notice.name), payload=encode(type,type.fromObject(notice.message || {}));
+      return {type,payload,data:packet(1,null,{name:type.fullName,data:payload})};
+    });
+  }
+  function deliver(state, items, deferred = false) {
+    const schedule = deferred ? callback => scope.setTimeout(callback, 0) : callback => scope.queueMicrotask(callback);
+    schedule(()=>{
+      for (const item of items) {
+        if (!state.active || !api.active || state.socket.readyState!==NativeSocket.OPEN) break;
+        const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(state.socket.url).origin});
+        state.syntheticEvents.add(event);state.socket.dispatchEvent(event);
+        if (item.type) {
+          api.stats.localNotifications++;
+          const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
+          capture(record,item.type,item.payload);report(record,'local','synthetic notification');
+        }
+      }
+    });
+  }
   function outgoing(state,data) {
     const parsed=parse(data);
     if (!parsed || parsed.kind!==2) return {data};
@@ -132,6 +158,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
       // Build the error envelope independently of the failed response/notification encoder.
       const payload=protobuf.Writer.create().uint32(types.response.fields.error.id * 8 + 2)
         .bytes(api.lookupType('Error').encode({code:1}).finish()).finish();
+      if(record.content)delete record.content.notifications;
       capture(record,types.response,payload,'response');
       return {synthetic:packet(3,parsed.id,{name:'',data:payload}),notifications:[],record};
     }
@@ -150,12 +177,9 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
         const response=types.response.fromObject(action.respond);
         const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
         capture(record,types.response,wrapper.data,'response',response);
-        const notifications=(Array.isArray(action.notify) ? action.notify : action.notify ? [action.notify] : []).map(notice=>{
-          const type=api.lookupType(notice.name);
-          const payload=encode(type,type.fromObject(notice.message || {}));
-          return{type,payload,data:packet(1,null,wrapperType.create({name:type.fullName,data:payload}))};
-        });
-        return{synthetic:packet(3,parsed.id,wrapper),notifications,record};
+        const notices=notifications(action.notify);
+        for(const notice of notices)capture(record,notice.type,notice.payload,'notifications');
+        return{synthetic:packet(3,parsed.id,wrapper),notifications:notices,record};
       }
       if(action===true){
         parsed.wrapper.data=encode(types.request,message);
@@ -193,7 +217,10 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
     try{
       context.message=decode(type,parsed.wrapper.data);
       capture(record,type,parsed.wrapper.data,'before',context.message);
-      if(api.readOnly || call(handler,context)!==true){report(record,'pass');return;}
+      if(api.readOnly){report(record,'pass');return;}
+      const modified=call(handler,context)===true, notices=notifications(context.notify);
+      for(const notice of notices)capture(record,notice.type,notice.payload,'notifications');
+      if(!modified){report(record,'pass');if(notices.length)deliver(state,notices,true);return;}
       parsed.wrapper.data=encode(type,context.message);
       capture(record,type,parsed.wrapper.data,'after',context.message);
       const result=packet(parsed.kind,parsed.id,parsed.wrapper);
@@ -201,6 +228,7 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
       Object.defineProperty(event,'data',{configurable:true,value:result.buffer});
       api.stats.modified++;
       report(record,'modified');
+      if(notices.length)deliver(state,notices,true);
     }catch(exception){if(!context.message)capture(record,type,parsed.wrapper.data);error(state,'incoming hook',exception,record);}
   }
   function cleanup(state){
@@ -227,21 +255,9 @@ function installWebSocketHook(scope, protobuf, schema, methodMap, version) {
       if(result.synthetic){
         if(socket.readyState!==NativeSocket.OPEN)return Reflect.apply(nativeSend,this,arguments);
         api.stats.blocked++;api.stats.synthetic++;
-        report(result.record,'blocked',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
+        report(result.record,'intercepted',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
         // Unity records its waiting callback after send() returns; defer the local response.
-        scope.queueMicrotask(()=>{
-          for (const item of [{data:result.synthetic},...result.notifications]) {
-            if (!state.active || !api.active || socket.readyState!==NativeSocket.OPEN) break;
-            const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(socket.url).origin});
-            state.syntheticEvents.add(event);socket.dispatchEvent(event);
-            if (item.type) {
-              api.stats.localNotifications++;
-              const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
-              capture(record,item.type,item.payload);
-              report(record,'local','synthetic notification');
-            }
-          }
-        });
+        deliver(state,[{data:result.synthetic},...result.notifications]);
         return;
       }
       const returned=Reflect.apply(nativeSend,this,result.modified?[result.data]:arguments);

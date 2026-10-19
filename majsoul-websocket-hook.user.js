@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Majsoul WebSocket Cosmetics
 // @namespace    majsoul-local-hook
-// @version      0.4.12
+// @version      0.5.1
 // @description  Local cosmetic customization with a bundled cfg snapshot.
 // @match        https://game.maj-soul.com/1/*
 // @run-at       document-start
@@ -290,15 +290,20 @@
     function capture(record, type, payload, phase = 'before', message) {
       const name = '.lq.'+(record.service ? record.service+'.'+record.method : record.method);
       if (api.debug !== true && !(typeof api.debug === 'string' && api.debug && name.includes(api.debug))) return;
-      const snapshot = {bytes:Uint8Array.from(payload)};
-      if (type) {
-        try { snapshot.message = type.toObject(message ?? decode(type,payload),{longs:String,bytes:String,enums:String}); }
-        catch (exception) { snapshot.error = exception.name; }
-      }
-      (record.content ||= {})[phase] = snapshot;
+      let snapshot;
+      try { snapshot = type ? type.toObject(message ?? decode(type,payload),{longs:String,bytes:String,enums:String}) : {bytes:Array.from(payload)}; }
+      catch (exception) { snapshot = {error:exception.name, bytes:Array.from(payload)}; }
+      const content = record.content ||= {};
+      if (phase === 'notifications') (content.notifications ||= []).push({name:type.fullName, message:snapshot});
+      else content[phase] = snapshot;
     }
     function dump(record) {
-      if (record.content) scope.console.info(format(record)+' — content',record.content);
+      if (!record.content) return;
+      const {before, ...details} = record.content;
+      const phase = record.action === 'intercepted' ? 'request' : record.action === 'pass' || record.action === 'local' ? 'message' : 'before';
+      scope.console.info({action:record.action, direction:record.direction,
+        name:'.lq.'+(record.service ? record.service+'.'+record.method : record.method),
+        connection:record.connection, id:record.id, [phase]:before, ...details});
     }
     function format(record, detail = '') {
       const name = record.service ? record.service+'.'+record.method : record.method || '<unknown>';
@@ -331,6 +336,27 @@
       if (action && typeof action.then==='function') throw new TypeError('WebSocket business hooks must be synchronous');
       return action;
     }
+    function notifications(notices) {
+      return (Array.isArray(notices) ? notices : notices ? [notices] : []).map(notice=>{
+        const type=api.lookupType(notice.name), payload=encode(type,type.fromObject(notice.message || {}));
+        return {type,payload,data:packet(1,null,{name:type.fullName,data:payload})};
+      });
+    }
+    function deliver(state, items, deferred = false) {
+      const schedule = deferred ? callback => scope.setTimeout(callback, 0) : callback => scope.queueMicrotask(callback);
+      schedule(()=>{
+        for (const item of items) {
+          if (!state.active || !api.active || state.socket.readyState!==NativeSocket.OPEN) break;
+          const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(state.socket.url).origin});
+          state.syntheticEvents.add(event);state.socket.dispatchEvent(event);
+          if (item.type) {
+            api.stats.localNotifications++;
+            const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
+            capture(record,item.type,item.payload);report(record,'local','synthetic notification');
+          }
+        }
+      });
+    }
     function outgoing(state,data) {
       const parsed=parse(data);
       if (!parsed || parsed.kind!==2) return {data};
@@ -351,6 +377,7 @@
         // Build the error envelope independently of the failed response/notification encoder.
         const payload=protobuf.Writer.create().uint32(types.response.fields.error.id * 8 + 2)
           .bytes(api.lookupType('Error').encode({code:1}).finish()).finish();
+        if(record.content)delete record.content.notifications;
         capture(record,types.response,payload,'response');
         return {synthetic:packet(3,parsed.id,{name:'',data:payload}),notifications:[],record};
       }
@@ -369,12 +396,9 @@
           const response=types.response.fromObject(action.respond);
           const wrapper=wrapperType.create({name:'',data:encode(types.response,response)});
           capture(record,types.response,wrapper.data,'response',response);
-          const notifications=(Array.isArray(action.notify) ? action.notify : action.notify ? [action.notify] : []).map(notice=>{
-            const type=api.lookupType(notice.name);
-            const payload=encode(type,type.fromObject(notice.message || {}));
-            return{type,payload,data:packet(1,null,wrapperType.create({name:type.fullName,data:payload}))};
-          });
-          return{synthetic:packet(3,parsed.id,wrapper),notifications,record};
+          const notices=notifications(action.notify);
+          for(const notice of notices)capture(record,notice.type,notice.payload,'notifications');
+          return{synthetic:packet(3,parsed.id,wrapper),notifications:notices,record};
         }
         if(action===true){
           parsed.wrapper.data=encode(types.request,message);
@@ -412,7 +436,10 @@
       try{
         context.message=decode(type,parsed.wrapper.data);
         capture(record,type,parsed.wrapper.data,'before',context.message);
-        if(api.readOnly || call(handler,context)!==true){report(record,'pass');return;}
+        if(api.readOnly){report(record,'pass');return;}
+        const modified=call(handler,context)===true, notices=notifications(context.notify);
+        for(const notice of notices)capture(record,notice.type,notice.payload,'notifications');
+        if(!modified){report(record,'pass');if(notices.length)deliver(state,notices,true);return;}
         parsed.wrapper.data=encode(type,context.message);
         capture(record,type,parsed.wrapper.data,'after',context.message);
         const result=packet(parsed.kind,parsed.id,parsed.wrapper);
@@ -420,6 +447,7 @@
         Object.defineProperty(event,'data',{configurable:true,value:result.buffer});
         api.stats.modified++;
         report(record,'modified');
+        if(notices.length)deliver(state,notices,true);
       }catch(exception){if(!context.message)capture(record,type,parsed.wrapper.data);error(state,'incoming hook',exception,record);}
     }
     function cleanup(state){
@@ -446,21 +474,9 @@
         if(result.synthetic){
           if(socket.readyState!==NativeSocket.OPEN)return Reflect.apply(nativeSend,this,arguments);
           api.stats.blocked++;api.stats.synthetic++;
-          report(result.record,'blocked',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
+          report(result.record,'intercepted',result.notifications.length ? 'local response + notifications queued' : 'local response queued');
           // Unity records its waiting callback after send() returns; defer the local response.
-          scope.queueMicrotask(()=>{
-            for (const item of [{data:result.synthetic},...result.notifications]) {
-              if (!state.active || !api.active || socket.readyState!==NativeSocket.OPEN) break;
-              const event=new scope.MessageEvent('message',{data:item.data.buffer,origin:new URL(socket.url).origin});
-              state.syntheticEvents.add(event);socket.dispatchEvent(event);
-              if (item.type) {
-                api.stats.localNotifications++;
-                const record=metadata(state,'notify',null,item.type.fullName.slice(4),null);
-                capture(record,item.type,item.payload);
-                report(record,'local','synthetic notification');
-              }
-            }
-          });
+          deliver(state,[{data:result.synthetic},...result.notifications]);
           return;
         }
         const returned=Reflect.apply(nativeSend,this,result.modified?[result.data]:arguments);
@@ -481,7 +497,7 @@
   function installCosmeticHook(scope, api, cfg) {
     const storage = scope.localStorage;
     const keys = {skin:'vip.skin', title:'vip.title', loading:'vip.loading', account:'vip.account',
-      main:'vip.char.main', sort:'vip.char.sort', hidden:'vip.char.hidden', use:'vip.views.use', views:'vip.views'};
+      main:'vip.char.main', sort:'vip.char.sort', hidden:'vip.char.hidden', use:'vip.views.use', views:'vip.views', random:'vip.char.random'};
     function key(name, id) { return keys[name] + (id === undefined ? '' : '.' + id); }
     function get(name, fallback, id) {
       const value = storage.getItem(key(name, id));
@@ -490,25 +506,32 @@
     function set(name, value, id) { storage.setItem(key(name, id), JSON.stringify(value)); }
     const definitions = cfg.item_definition;
     const games = new WeakMap();
-    let roomUpdate = null, roomSeq = 0;
+    let roomUpdate = null, roomSeq = 0, randomChoice = null, currentGame = null;
     const ids = table => Object.keys(table.map_).map(Number);
-    const mainId = () => get('main', 200007);
+    const mainId = () => randomChoice?.character_id || get('main', 200007);
+    const randomSettings = () => get('random', {enabled:false, pool:[]});
+    function selectRandom() {
+      const {enabled, pool} = randomSettings();
+      randomChoice = enabled && pool.length ? pool[Math.floor(Math.random() * pool.length)] : null;
+    }
     const selectedViews = () => get('views', {}, get('use', 0)).values || [];
-    function character(charid) {
+    function character(charid, choice = randomChoice) {
       return {charid:Number(charid), level:5, exp:1, is_upgraded:true, rewarded_level:[1,2,3,4,5], views:[],
-        skin:get('skin', definitions.character.map_[charid]?.init_skin || 0, charid),
+        skin:choice?.character_id === Number(charid) ? choice.skin_id
+          : get('skin', definitions.character.map_[charid]?.init_skin || 0, charid),
         extra_emoji:(cfg.character.emoji.groups_[charid] || []).map(row => row.sub_id)};
     }
     function views() {
       return selectedViews().map(view => ({slot:view.slot, type:0, item_id_list:[],
         item_id:view.type ? view.item_id_list[Math.floor(Math.random() * view.item_id_list.length)] : view.item_id}));
     }
-    function override(players) {
+    function override(players, choice = randomChoice) {
       let changed = false;
       for (const player of players || []) {
         if (!player) continue;
         if (player.account_id === get('account', null)) {
-          const main = character(mainId());
+          const main = character(choice?.character_id || get('main', 200007), choice);
+          if (choice) main.skin = choice.skin_id;
           const updates = {views:views(), avatar_id:main.skin, character:main,
             avatar_frame:selectedViews().find(view => view.slot === 5)?.item_id || 0,
             title:get('title', 0), loading_image:get('loading', [])};
@@ -522,7 +545,7 @@
       return changed;
     }
     function nextRoomSeq(message) { message.seq = roomSeq = Math.max(message.seq || 0, roomSeq + 1); }
-    function clearRoom() { roomUpdate = null; roomSeq = 0; }
+    function clearRoom() { roomUpdate = null; roomSeq = 0; randomChoice = null; }
     function updateRoom(message) {
       const changed = override(message?.player_list);
       roomUpdate = message?.player_list?.some(player => player.account_id === get('account', null)) ? message : null;
@@ -530,10 +553,21 @@
       return changed;
     }
     const localRequests = {
+      fetchRandomCharacter: randomSettings,
+      setRandomCharacter(message) {
+        const pool = message.pool.map(({character_id, skin_id}) => ({character_id, skin_id}));
+        if (message.enabled && !pool.length || pool.some(entry => !definitions.character.map_[entry.character_id] || !definitions.skin.map_[entry.skin_id])) {
+          throw new Error('Invalid random character pool');
+        }
+        set('random', {enabled:message.enabled, pool});
+      },
       useTitle: message => set('title', message.title),
       setLoadingImage: message => set('loading', message.images),
-      changeMainCharacter: message => set('main', message.character_id),
-      changeCharacterSkin: message => set('skin', message.skin, message.character_id),
+      changeMainCharacter(message) { set('main', message.character_id); randomChoice = null; },
+      changeCharacterSkin(message) {
+        set('skin', message.skin, message.character_id);
+        if (randomChoice?.character_id === message.character_id) randomChoice.skin_id = message.skin;
+      },
       updateCharacterSort: message => set('sort', message.sort),
       setHiddenCharacter(message) { set('hidden', message.chara_list); return {hidden_characters:message.chara_list}; },
       useCommonView: message => set('use', message.index),
@@ -545,9 +579,9 @@
       const {socket, service, method, message} = context;
       if (service === 'Lobby' && Object.hasOwn(localRequests, method)) {
         const response = localRequests[method](message);
-        if (method === 'changeCharacterSkin') {
-          const notify = [{name:'NotifyAccountUpdate',
-            message:{update:{character:{characters:[character(message.character_id)]}}}}];
+        if (method === 'changeCharacterSkin' || method === 'changeMainCharacter') {
+          const notify = method === 'changeCharacterSkin' ? [{name:'NotifyAccountUpdate',
+            message:{update:{character:{characters:[character(message.character_id)]}}}}] : [];
           if (roomUpdate) {
             override(roomUpdate.player_list);
             nextRoomSeq(roomUpdate);
@@ -558,7 +592,10 @@
         return {respond:response || {}};
       }
       if (service === 'FastTest' && method === 'authGame') {
-        games.set(socket, {account:message.account_id || get('account', 0), seat:-1});
+        const account = message.account_id || get('account', 0);
+        const choice = message.game_uuid && currentGame?.uuid === message.game_uuid && currentGame.account === account
+          ? currentGame.choice : null;
+        games.set(socket, {account, seat:-1, choice});
       }
       if (service === 'FastTest' && method === 'broadcastInGame') {
         let content;
@@ -573,27 +610,38 @@
         return {respond:{}, notify:{name:'NotifyGameBroadcast', message:{seat, content:message.content}}};
       }
     };
-    api.onResponse = ({socket, service, method, message}) => {
+    function randomNotice(choice) {
+      const selected=character(choice.character_id); selected.skin=choice.skin_id;
+      return {name:'NotifyAccountUpdate', message:{update:{character:{characters:[selected]},
+        main_character:{character_id:choice.character_id, skin_id:choice.skin_id}}}};
+    }
+    api.onResponse = context => {
+      const {socket, service, method, message}=context;
       if (message.error?.code) return;
       if (service === 'FastTest') {
         if (method !== 'authGame') return;
         const account = games.get(socket)?.account || get('account', 0);
-        games.set(socket, {account, seat:account ? message.seat_list.indexOf(account) : -1});
-        return override(message.players);
+        const choice = games.has(socket) ? games.get(socket).choice : randomChoice;
+        games.set(socket, {account, seat:account ? message.seat_list.indexOf(account) : -1, choice});
+        return override(message.players, choice);
       }
       if (service !== 'Lobby') return;
       switch (method) {
         case 'login': case 'emailLogin': case 'oauth2Login':
           if (message.account_id) {
-            if (message.account_id !== get('account', null)) clearRoom();
+            if (message.account_id !== get('account', null)) { clearRoom(); currentGame = null; }
             set('account', message.account_id);
           }
           return override([message.account]);
         case 'fetchInfo': {
+          if (get('random', null) === null && message.random_character) {
+            set('random', {enabled:message.random_character.enabled, pool:message.random_character.pool.map(({character_id, skin_id}) => ({character_id, skin_id}))});
+          }
+          message.random_character = randomSettings();
           message.character_info = Object.assign(message.character_info || {}, {send_gift_count:0, send_gift_limit:2,
             skins:ids(definitions.skin), finished_endings:ids(cfg.spot.rewards), rewarded_endings:ids(cfg.spot.rewards),
             main_character_id:mainId(), character_sort:get('sort', []), hidden_characters:get('hidden', []),
-            characters:ids(definitions.character).map(character)});
+            characters:ids(definitions.character).map(id => character(id))});
           message.all_common_views = {use:get('use', 0), views:Array.from({length:10}, (_, i) => get('views', {}, i))};
           message.title_list ??= {};
           message.title_list.title_list = ids(definitions.title);
@@ -608,22 +656,37 @@
         case 'joinRoom': case 'fetchRoom': case 'createRoom': {
           const room = message.room;
           if (!room) { clearRoom(); return; }
-          if (method !== 'fetchRoom' || !roomUpdate) roomSeq = room.seq || 0;
+          const entering=method !== 'fetchRoom' || !roomUpdate;
+          if (entering) { roomSeq = room.seq || 0; selectRandom(); }
           room.seq = roomSeq = Math.max(room.seq || 0, roomSeq);
-          return updateRoom(api.lookupType('NotifyRoomPlayerUpdate').fromObject({player_list:room.persons,
+          const changed=updateRoom(api.lookupType('NotifyRoomPlayerUpdate').fromObject({player_list:room.persons,
             owner_id:room.owner_id, robot_count:room.robot_count, seq:room.seq, robots:room.robots, positions:room.positions}));
+          if(entering && roomUpdate && randomChoice)context.notify=randomNotice(randomChoice);
+          return changed;
         }
         case 'leaveRoom': clearRoom(); return;
         case 'fetchGameRecord': return override(message.head?.accounts);
         case 'fetchAccountInfo': return override([message.account]);
       }
     };
-    api.onNotify = ({name, message}) => {
+    api.onNotify = context => {
+      const {name, message}=context;
       switch (name) {
+        case 'NotifyRoomGameStart':
+        case 'NotifyMatchGameStart': {
+          const account=get('account', 0);
+          if (!message.game_uuid || currentGame?.uuid === message.game_uuid && currentGame.account === account) return;
+          if(name === 'NotifyMatchGameStart')selectRandom();
+          currentGame={uuid:message.game_uuid, account, choice:randomChoice};
+          if(name === 'NotifyMatchGameStart' && randomChoice)context.notify=randomNotice(randomChoice);
+          return;
+        }
         case 'NotifyAccountUpdate':
           if (!message.update) return;
           delete message.update.character;
-          delete message.update.main_character;
+          if (randomChoice && message.update.main_character) {
+            message.update.main_character = {character_id:randomChoice.character_id, skin_id:randomChoice.skin_id};
+          } else delete message.update.main_character;
           return true;
         case 'NotifyRoomPlayerUpdate':
           nextRoomSeq(message); updateRoom(message); return true;
@@ -641,7 +704,7 @@
   }
 
   const cfg = installConfigSnapshot(window);
-  const protocol = unpackProtocol([["Wrapper",[["name",1,"string"],["data",2,"bytes"]]],["ReqLogin",[]],["ResLogin",[["error",1,3],["account_id",2,"uint32"],["account",3,4]]],["Error",[["code",1,"uint32"],["u32_params",2,"uint32",1],["str_params",3,"string",2],["json_param",4,"string"],["level",5,"uint32"],["message",6,"string"]]],["Account",[["account_id",1,"uint32"],["title",7,"uint32"],["avatar_id",13,"uint32"],["avatar_frame",23,"uint32"],["loading_image",30,"uint32",1]]],["ReqEmailLogin",[]],["ReqOauth2Login",[]],["ReqCommon",[]],["ResFetchInfo",[["error",1,3],["title_list",10,9],["bag_info",11,10],["character_info",27,13],["all_common_views",28,16]]],["ResTitleList",[["error",1,3],["title_list",2,"uint32",1]]],["ResBagInfo",[["error",1,3],["bag",2,11]]],["Bag",[["items",1,12,1]]],["Item",[["item_id",1,"uint32"],["stack",2,"uint32"]]],["ResCharacterInfo",[["error",1,3],["characters",2,14,1],["skins",3,"uint32",1],["main_character_id",4,"uint32"],["send_gift_count",5,"uint32"],["send_gift_limit",6,"uint32"],["finished_endings",7,"uint32",1],["rewarded_endings",8,"uint32",1],["character_sort",9,"uint32",1],["hidden_characters",10,"uint32",1],["other_character_sort",11,"uint32",1]]],["Character",[["charid",1,"uint32"],["level",2,"uint32"],["exp",3,"uint32"],["views",4,15,1],["skin",5,"uint32"],["is_upgraded",6,"bool"],["extra_emoji",7,"uint32",1],["rewarded_level",8,"uint32",1],["enabled_emoji",9,"uint32",1]]],["ViewSlot",[["slot",1,"uint32"],["item_id",2,"uint32"],["type",3,"uint32"],["item_id_list",4,"uint32",1]]],["ResAllcommonViews",[["views",1,17,1],["use",2,"uint32"],["error",3,3]]],["ResAllcommonViews.Views",[["values",1,15,1],["index",2,"uint32"],["name",3,"string"]]],["ReqJoinRoom",[]],["ResJoinRoom",[["error",1,3],["room",2,20]]],["Room",[["owner_id",2,"uint32"],["persons",5,21,1],["robot_count",9,"uint32"],["seq",11,"uint32"],["robots",13,21,1],["positions",14,"uint32",1]]],["PlayerGameView",[["account_id",1,"uint32"],["avatar_id",2,"uint32"],["title",3,"uint32"],["character",6,14],["avatar_frame",8,"uint32"],["views",10,15,1]]],["ResSelfRoom",[["error",1,3],["room",2,20]]],["ReqCreateRoom",[]],["ResCreateRoom",[["error",1,3],["room",2,20]]],["ReqGameRecord",[]],["ResGameRecord",[["error",1,3],["head",3,27]]],["RecordGame",[["accounts",11,28,1]]],["RecordGame.AccountInfo",[["account_id",1,"uint32"],["avatar_id",4,"uint32"],["character",5,14],["title",6,"uint32"],["avatar_frame",9,"uint32"],["views",11,15,1]]],["ReqAccountInfo",[]],["ResAccountInfo",[["error",1,3],["account",2,4]]],["ReqUseTitle",[["title",1,"uint32"]]],["ResCommon",[["error",1,3]]],["ReqSetLoadingImage",[["images",1,"uint32",1]]],["ReqChangeMainCharacter",[["character_id",1,"uint32"]]],["ReqChangeCharacterSkin",[["character_id",1,"uint32"],["skin",2,"uint32"]]],["ReqUpdateCharacterSort",[["sort",1,"uint32",1],["other_sort",2,"uint32",1],["hidden_characters",3,"uint32",1]]],["ReqSetHiddenCharacter",[["chara_list",1,"uint32",1]]],["ResSetHiddenCharacter",[["error",1,3],["hidden_characters",2,"uint32",1]]],["ReqUseCommonView",[["index",3,"uint32"]]],["ReqSaveCommonViews",[["views",1,15,1],["save_index",2,"uint32"],["is_use",3,"uint32"],["name",4,"string"]]],["ReqFinishedEnding",[]],["ReqAuthGame",[["account_id",1,"uint32"]]],["ResAuthGame",[["error",1,3],["players",2,21,1],["seat_list",3,"uint32",1]]],["ReqBroadcastInGame",[["content",1,"string"],["except_self",2,"bool"]]],["NotifyAccountUpdate",[["update",1,46]]],["AccountUpdate",[["character",2,47],["main_character",18,48]]],["AccountUpdate.CharacterUpdate",[["characters",2,14,1]]],["AccountUpdate.MainCharacterUpdate",[]],["NotifyRoomPlayerUpdate",[["owner_id",3,"uint32"],["robot_count",4,"uint32"],["player_list",5,21,1],["seq",6,"uint32"],["robots",7,21,1],["positions",8,"uint32",1]]],["NotifyRoomPlayerReady",[["seq",4,"uint32"]]],["NotifyRoomPlayerDressing",[["seq",4,"uint32"]]],["NotifyRoomKickOut",[]],["NotifyGameFinishRewardV2",[["main_character",4,54]]],["NotifyGameFinishRewardV2.MainCharacter",[["level",1,"uint32"],["exp",2,"uint32"],["add",3,"uint32"]]],["NotifyGameBroadcast",[["seat",1,"uint32"],["content",2,"string"]]]], {"Lobby":{"login":[1,2],"emailLogin":[5,2],"oauth2Login":[6,2],"fetchInfo":[7,8],"joinRoom":[18,19],"fetchRoom":[7,22],"createRoom":[23,24],"fetchGameRecord":[25,26],"fetchAccountInfo":[29,30],"useTitle":[31,32],"setLoadingImage":[33,32],"changeMainCharacter":[34,32],"changeCharacterSkin":[35,32],"updateCharacterSort":[36,32],"setHiddenCharacter":[37,38],"useCommonView":[39,32],"saveCommonViews":[40,32],"addFinishedEnding":[41,32],"leaveRoom":[7,32]},"FastTest":{"authGame":[42,43],"broadcastInGame":[44,32]}});
-  const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, "0.4.12");
+  const protocol = unpackProtocol([["Wrapper",[["name",1,"string"],["data",2,"bytes"]]],["ReqLogin",[]],["ResLogin",[["error",1,3],["account_id",2,"uint32"],["account",3,4]]],["Error",[["code",1,"uint32"],["u32_params",2,"uint32",1],["str_params",3,"string",2],["json_param",4,"string"],["level",5,"uint32"],["message",6,"string"]]],["Account",[["account_id",1,"uint32"],["title",7,"uint32"],["avatar_id",13,"uint32"],["avatar_frame",23,"uint32"],["loading_image",30,"uint32",1]]],["ReqEmailLogin",[]],["ReqOauth2Login",[]],["ReqCommon",[]],["ResFetchInfo",[["error",1,3],["title_list",10,9],["bag_info",11,10],["character_info",27,13],["all_common_views",28,16],["random_character",31,18]]],["ResTitleList",[["error",1,3],["title_list",2,"uint32",1]]],["ResBagInfo",[["error",1,3],["bag",2,11]]],["Bag",[["items",1,12,1]]],["Item",[["item_id",1,"uint32"],["stack",2,"uint32"]]],["ResCharacterInfo",[["error",1,3],["characters",2,14,1],["skins",3,"uint32",1],["main_character_id",4,"uint32"],["send_gift_count",5,"uint32"],["send_gift_limit",6,"uint32"],["finished_endings",7,"uint32",1],["rewarded_endings",8,"uint32",1],["character_sort",9,"uint32",1],["hidden_characters",10,"uint32",1],["other_character_sort",11,"uint32",1]]],["Character",[["charid",1,"uint32"],["level",2,"uint32"],["exp",3,"uint32"],["views",4,15,1],["skin",5,"uint32"],["is_upgraded",6,"bool"],["extra_emoji",7,"uint32",1],["rewarded_level",8,"uint32",1],["enabled_emoji",9,"uint32",1]]],["ViewSlot",[["slot",1,"uint32"],["item_id",2,"uint32"],["type",3,"uint32"],["item_id_list",4,"uint32",1]]],["ResAllcommonViews",[["views",1,17,1],["use",2,"uint32"],["error",3,3]]],["ResAllcommonViews.Views",[["values",1,15,1],["index",2,"uint32"],["name",3,"string"]]],["ResRandomCharacter",[["error",1,3],["enabled",2,"bool"],["pool",3,19,1]]],["RandomCharacter",[["character_id",1,"uint32"],["skin_id",2,"uint32"]]],["ReqJoinRoom",[]],["ResJoinRoom",[["error",1,3],["room",2,22]]],["Room",[["owner_id",2,"uint32"],["persons",5,23,1],["robot_count",9,"uint32"],["seq",11,"uint32"],["robots",13,23,1],["positions",14,"uint32",1]]],["PlayerGameView",[["account_id",1,"uint32"],["avatar_id",2,"uint32"],["title",3,"uint32"],["character",6,14],["avatar_frame",8,"uint32"],["views",10,15,1]]],["ResSelfRoom",[["error",1,3],["room",2,22]]],["ReqCreateRoom",[]],["ResCreateRoom",[["error",1,3],["room",2,22]]],["ReqGameRecord",[]],["ResGameRecord",[["error",1,3],["head",3,29]]],["RecordGame",[["accounts",11,30,1]]],["RecordGame.AccountInfo",[["account_id",1,"uint32"],["avatar_id",4,"uint32"],["character",5,14],["title",6,"uint32"],["avatar_frame",9,"uint32"],["views",11,15,1]]],["ReqAccountInfo",[]],["ResAccountInfo",[["error",1,3],["account",2,4]]],["ReqUseTitle",[["title",1,"uint32"]]],["ResCommon",[["error",1,3]]],["ReqSetLoadingImage",[["images",1,"uint32",1]]],["ReqChangeMainCharacter",[["character_id",1,"uint32"]]],["ReqChangeCharacterSkin",[["character_id",1,"uint32"],["skin",2,"uint32"]]],["ReqUpdateCharacterSort",[["sort",1,"uint32",1],["other_sort",2,"uint32",1],["hidden_characters",3,"uint32",1]]],["ReqSetHiddenCharacter",[["chara_list",1,"uint32",1]]],["ResSetHiddenCharacter",[["error",1,3],["hidden_characters",2,"uint32",1]]],["ReqUseCommonView",[["index",3,"uint32"]]],["ReqSaveCommonViews",[["views",1,15,1],["save_index",2,"uint32"],["is_use",3,"uint32"],["name",4,"string"]]],["ReqFinishedEnding",[]],["ReqRandomCharacter",[["enabled",1,"bool"],["pool",2,19,1]]],["ReqAuthGame",[["account_id",1,"uint32"],["game_uuid",3,"string"]]],["ResAuthGame",[["error",1,3],["players",2,23,1],["seat_list",3,"uint32",1]]],["ReqBroadcastInGame",[["content",1,"string"],["except_self",2,"bool"]]],["NotifyAccountUpdate",[["update",1,49]]],["AccountUpdate",[["character",2,50],["main_character",18,51]]],["AccountUpdate.CharacterUpdate",[["characters",2,14,1]]],["AccountUpdate.MainCharacterUpdate",[["character_id",1,"uint32"],["skin_id",2,"uint32"]]],["NotifyMatchGameStart",[["game_uuid",3,"string"]]],["NotifyRoomGameStart",[["game_uuid",3,"string"]]],["NotifyRoomPlayerUpdate",[["owner_id",3,"uint32"],["robot_count",4,"uint32"],["player_list",5,23,1],["seq",6,"uint32"],["robots",7,23,1],["positions",8,"uint32",1]]],["NotifyRoomPlayerReady",[["seq",4,"uint32"]]],["NotifyRoomPlayerDressing",[["seq",4,"uint32"]]],["NotifyRoomKickOut",[]],["NotifyGameFinishRewardV2",[["main_character",4,59]]],["NotifyGameFinishRewardV2.MainCharacter",[["level",1,"uint32"],["exp",2,"uint32"],["add",3,"uint32"]]],["NotifyGameBroadcast",[["seat",1,"uint32"],["content",2,"string"]]]], {"Lobby":{"login":[1,2],"emailLogin":[5,2],"oauth2Login":[6,2],"fetchInfo":[7,8],"joinRoom":[20,21],"fetchRoom":[7,24],"createRoom":[25,26],"fetchGameRecord":[27,28],"fetchAccountInfo":[31,32],"useTitle":[33,34],"setLoadingImage":[35,34],"changeMainCharacter":[36,34],"changeCharacterSkin":[37,34],"updateCharacterSort":[38,34],"setHiddenCharacter":[39,40],"useCommonView":[41,34],"saveCommonViews":[42,34],"addFinishedEnding":[43,34],"leaveRoom":[7,34],"setRandomCharacter":[44,34],"fetchRandomCharacter":[7,18]},"FastTest":{"authGame":[45,46],"broadcastInGame":[47,34]}});
+  const api = installWebSocketHook(window, window.protobuf, protocol.schema, protocol.methodMap, "0.5.1");
   installCosmeticHook(window, api, cfg);
 })();

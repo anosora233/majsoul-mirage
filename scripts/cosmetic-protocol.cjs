@@ -2,9 +2,9 @@
 function cosmeticProtocol(protobuf, schema, config) {
   const source = protobuf.Root.fromJSON(schema).resolveAll();
   const fields = {
-    NotifyRoomPlayerReady:'seq', NotifyRoomPlayerDressing:'seq',
+    NotifyMatchGameStart:'game_uuid', NotifyRoomGameStart:'game_uuid', NotifyRoomPlayerReady:'seq', NotifyRoomPlayerDressing:'seq',
     ResLogin:'error account_id account',
-    ResFetchInfo:'error character_info all_common_views title_list bag_info',
+    ResFetchInfo:'error character_info all_common_views title_list bag_info random_character',
     Account:'account_id avatar_id avatar_frame title loading_image',
     PlayerGameView:'account_id avatar_id avatar_frame title character views',
     'RecordGame.AccountInfo':'account_id avatar_id avatar_frame title character views',
@@ -13,12 +13,12 @@ function cosmeticProtocol(protobuf, schema, config) {
     ResAuthGame:'error players seat_list',
     NotifyGameFinishRewardV2:'main_character',
     AccountUpdate:'character main_character',
-    'AccountUpdate.CharacterUpdate':'characters', 'AccountUpdate.MainCharacterUpdate':'',
-    ReqAuthGame:'account_id', ReqFinishedEnding:''
+    'AccountUpdate.CharacterUpdate':'characters',
+    ReqAuthGame:'account_id game_uuid', ReqFinishedEnding:''
   };
   const lobby = 'login emailLogin oauth2Login fetchInfo joinRoom fetchRoom createRoom fetchGameRecord fetchAccountInfo '
     + 'useTitle setLoadingImage changeMainCharacter changeCharacterSkin updateCharacterSort setHiddenCharacter '
-    + 'useCommonView saveCommonViews addFinishedEnding leaveRoom';
+    + 'useCommonView saveCommonViews addFinishedEnding leaveRoom setRandomCharacter fetchRandomCharacter';
   const methods = {Lobby:lobby.split(' '), FastTest:['authGame', 'broadcastInGame']};
   const result = new protobuf.Root(), methodMap = {service:{}};
   function include(name, selection) {
@@ -49,7 +49,7 @@ function cosmeticProtocol(protobuf, schema, config) {
       methodMap.service[service][method] = pair;
     }
   }
-  for (const name of ['NotifyAccountUpdate', 'NotifyRoomPlayerUpdate', 'NotifyRoomPlayerReady', 'NotifyRoomPlayerDressing', 'NotifyRoomKickOut', 'NotifyGameFinishRewardV2', 'NotifyGameBroadcast']) include('lq.' + name);
+  for (const name of ['NotifyAccountUpdate', 'NotifyMatchGameStart', 'NotifyRoomGameStart', 'NotifyRoomPlayerUpdate', 'NotifyRoomPlayerReady', 'NotifyRoomPlayerDressing', 'NotifyRoomKickOut', 'NotifyGameFinishRewardV2', 'NotifyGameBroadcast']) include('lq.' + name);
   return {schema:result.resolveAll().toJSON(), methodMap};
 }
 

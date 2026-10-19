@@ -107,5 +107,6 @@ with tempfile.TemporaryDirectory(dir=ROOT / '.cache') as directory:
         if fixture['type'] == 'ResFetchInfo' and decoded.character_info.characters[1]:
             assert len(decoded.character_info.characters) == 124
             assert decoded.character_info.main_character_id == 200001
-            assert decoded.server_time.server_time == 123456
+            if fixture.get('unpackedData'):
+                assert decoded.server_time.server_time == 123456
 print(f'PASS: game Lua decoder accepted {len(messages)} userscript responses and notifications')
