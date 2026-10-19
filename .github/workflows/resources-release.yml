@@ -1,6 +1,16 @@
 name: Update resources and latest release
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/resources-release.yml'
+      - 'src/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'requirements.txt'
   schedule:
     # 17:17 in Asia/Shanghai and Asia/Singapore (UTC+8).
     - cron: '17 9 * * *'

@@ -77,6 +77,8 @@ Keep local diagnostics in `.cache/`. Never commit credentials, raw account/sessi
 
 The afternoon check is a polling choice, not an official maintenance schedule. Announced updates vary, so the workflow checks every day rather than only on Wednesdays. Updates after the check are detected the next day unless triggered manually.
 
+Pushes to `main` also trigger the workflow when source, scripts, tests, dependency manifests, or the workflow itself change. This starts the initial release without requiring a manual API dispatch. Documentation-only pushes do not trigger an immediate run.
+
 `scripts/release-resources.cjs check` hashes the public `bundle_info_so.majset` resource index using SHA-256 and compares it and the source commit with `resource-version.json` from the rolling release. A changed index signals a resource update, not an official numeric game version or necessarily a relevant configuration change. All four site matches currently share this one resource source; region-specific indices are not polled separately. A missing release triggers the initial build; HTTP errors fail the check instead of being treated as a new version.
 
 Changed inputs trigger a fresh resource/protocol export, build, JavaScript tests, original Lua decoder tests, and syntax validation. Only successful jobs pass the script and provenance metadata to publishing. The resource-processing job has read-only repository permissions, no persisted checkout credentials, and no release token in its environment. A separate publishing job has `contents: write` and never executes resource code. The built-in `GITHUB_TOKEN` is sufficient; no personal access token is needed.
