@@ -9,12 +9,7 @@
 
 雀魂 Web クライアントの装飾をローカルで変更する Tampermonkey ユーザースクリプトです。現在のバージョンは **0.5.1** です。
 
-ネイティブ WebSocket メッセージをフックし、必要な protobuf フィールドを解析して表示を変更します。サーバー上の所持状況や、他のプレイヤーから見た表示は変わりません。対応サイトのパターン：
-
-- `https://mahjongsoul.game.yo-star.com/*`
-- `https://majsoul.union-game.com/*`
-- `https://game.mahjongsoul.com/*`
-- `https://game.maj-soul.com/1/*`
+ネイティブ WebSocket メッセージをフックし、必要な protobuf フィールドを解析して表示を変更します。サーバー上の所持状況や、他のプレイヤーから見た表示は変わりません。
 
 ## ⚠️ 免責事項
 
@@ -29,7 +24,7 @@
 
 - キャラクター、衣装、スタンプ、称号、ロード画像、装飾プリセットのローカル変更。
 - ルーム、対局、アカウント、牌譜の表示変更。
-- キャラクターと衣装のランダム候補をローカルに保存。入室成功時または `NotifyMatchGameStart` で抽選し、ルームの選択は `NotifyRoomGameStart` で対局に紐付けます。
+- ローカルの候補からキャラクターと衣装をランダムに選択。
 - 手動でのキャラクター・衣装変更を現在の選択に反映。ランダム候補は書き換えず、対局認証では再抽選しません。
 - 簡潔な英語ログと、コピー可能なメッセージオブジェクト。メッセージ履歴キューは保持しません。
 
@@ -54,13 +49,9 @@ npm run test:lua
 2. 他の装飾フックスクリプトを無効にし、保存してゲームを再読み込みします。
 3. ヘッダー全体を保持してください。特に `@run-at document-start`、`@sandbox raw`、`@grant none`、`@require` が必要です。
 
-既存の `vip.*` ローカル設定を引き継ぎます。再ビルド後は生成ファイルを再インストールしてください。
-
 ## 🔍 デバッグ
 
-ゲームページのコンソールで実行します。
-
-コンソール API は `majsoulMirage` です。
+ゲームページのコンソールで `majsoulMirage` API を使用します。
 
 ```js
 majsoulMirage.debug = 'NotifyAccountUpdate'; // メッセージ名の一部で絞り込み
@@ -94,4 +85,4 @@ python scripts/update-cfg.py --offline --protocol
 
 ## 🤝 謝辞
 
-本プロジェクトは主に [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm) のメッセージフックとローカル装飾処理の考え方を参考にしています。作者および貢献者の皆様に感謝します。この謝辞は提携や推奨を意味するものではありません。
+本プロジェクトは主に [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm) のメッセージフックとローカル装飾処理の考え方を参考にしています。作者および貢献者の皆様に感謝します。

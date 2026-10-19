@@ -9,12 +9,7 @@
 
 A Tampermonkey userscript for local cosmetic customization in the Majsoul web client. Current version: **0.5.1**.
 
-The script intercepts native WebSocket messages, decodes selected protobuf fields, and applies local appearance overrides. Changes do not grant server-side ownership or change what other players see. Supported site patterns:
-
-- `https://mahjongsoul.game.yo-star.com/*`
-- `https://majsoul.union-game.com/*`
-- `https://game.mahjongsoul.com/*`
-- `https://game.maj-soul.com/1/*`
+The script intercepts native WebSocket messages, decodes selected protobuf fields, and applies local appearance overrides. Changes do not grant server-side ownership or change what other players see.
 
 ## ⚠️ Disclaimer
 
@@ -29,7 +24,7 @@ The script intercepts native WebSocket messages, decodes selected protobuf field
 
 - Local characters, skins, emoji, titles, loading images, and cosmetic view presets.
 - Appearance overrides for rooms, matches, account information, and replays.
-- Local random character/skin pools: select on successful room entry or `NotifyMatchGameStart`; bind room selections through `NotifyRoomGameStart`.
+- Random character and skin selection from a local pool.
 - Manual character and skin changes override the current selection without rewriting the random pool. Authentication never draws a new selection.
 - Concise English logs and optional copyable message objects, with no message history queue.
 
@@ -54,13 +49,9 @@ The build produces `majsoul-mirage.user.js` in the repository root. This final a
 2. Disable other cosmetic hook scripts, save, and refresh the game.
 3. Preserve the complete header, especially `@run-at document-start`, `@sandbox raw`, `@grant none`, and `@require`.
 
-Existing `vip.*` local settings are retained. Reinstall the generated file after rebuilding.
-
 ## 🔍 Debugging
 
-Run in the game page console:
-
-The console API is `majsoulMirage`.
+Use the `majsoulMirage` API in the game page console:
 
 ```js
 majsoulMirage.debug = 'NotifyAccountUpdate'; // Filter by message-name fragment
@@ -94,4 +85,4 @@ See [usage](docs/usage.md), [maintenance](docs/maintenance.md), [validation](doc
 
 ## 🤝 Acknowledgments
 
-This project primarily references [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm), particularly its approach to message hooks and local cosmetic behavior. Thanks to its author and contributors. This acknowledgment does not imply affiliation or endorsement.
+This project primarily references [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm), particularly its approach to message hooks and local cosmetic behavior. Thanks to its author and contributors.

@@ -9,12 +9,7 @@
 
 用于雀魂网页端本地装扮修改的 Tampermonkey 用户脚本，当前版本 **0.5.1**。
 
-脚本拦截原生 WebSocket 消息，解析必要的 protobuf 字段并修改本地展示，不改变服务器上的所持状态或其他玩家看到的装扮。支持以下站点匹配规则：
-
-- `https://mahjongsoul.game.yo-star.com/*`
-- `https://majsoul.union-game.com/*`
-- `https://game.mahjongsoul.com/*`
-- `https://game.maj-soul.com/1/*`
+脚本拦截原生 WebSocket 消息，解析必要的 protobuf 字段并修改本地展示，不改变服务器上的所持状态或其他玩家看到的装扮。
 
 ## ⚠️ 免责声明
 
@@ -29,7 +24,7 @@
 
 - 本地角色、皮肤、表情、称号、加载图及装扮展示方案。
 - 房间、对局、账号和牌谱中的装扮显示修改。
-- 本地随机角色与皮肤候选池：成功进房或收到 `NotifyMatchGameStart` 时抽选，房间选择通过 `NotifyRoomGameStart` 绑定到对局。
+- 支持从本地候选池随机选择角色与皮肤。
 - 手动换角、换肤覆盖本次选择，不改写随机候选池；对局认证不重新抽选。
 - 简洁英语日志，可选输出便于复制的消息对象，不保存消息历史队列。
 
@@ -54,13 +49,9 @@ npm run test:lua
 2. 停用其他装扮 Hook 脚本，保存并刷新游戏。
 3. 保留完整脚本头，特别是 `@run-at document-start`、`@sandbox raw`、`@grant none` 和 `@require`。
 
-保留已有的 `vip.*` 本地设置。重新构建后需要重新安装生成文件。
-
 ## 🔍 调试
 
-在游戏页面控制台运行：
-
-控制台 API 为 `majsoulMirage`。
+在游戏页面控制台使用 `majsoulMirage` API：
 
 ```js
 majsoulMirage.debug = 'NotifyAccountUpdate'; // 按消息名片段筛选
@@ -94,4 +85,4 @@ python scripts/update-cfg.py --offline --protocol
 
 ## 🤝 参考与致谢
 
-本项目主要参考了 [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm) 的消息 Hook 与本地装扮处理思路，感谢其作者及贡献者。此致谢不代表双方存在关联或获得对方背书。
+本项目主要参考了 [anosora233/majsoul-hook-mitm](https://github.com/anosora233/majsoul-hook-mitm) 的消息 Hook 与本地装扮处理思路，感谢其作者及贡献者。
